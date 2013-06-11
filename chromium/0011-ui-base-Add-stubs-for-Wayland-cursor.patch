@@ -1,0 +1,56 @@
+From 7896c0985184ec9a3e536ad2cb4aaba7cae491e5 Mon Sep 17 00:00:00 2001
+From: Tiago Vignatti <tiago.vignatti@intel.com>
+Date: Fri, 3 May 2013 17:07:47 -0300
+Subject: [PATCH 11/19] ui/base: Add stubs for Wayland cursor
+
+Signed-off-by: Tiago Vignatti <tiago.vignatti@intel.com>
+---
+ ui/base/cursor/cursor_wayland.cc |   15 +++++++++++++++
+ ui/ui.gyp                        |    2 ++
+ 2 files changed, 17 insertions(+)
+ create mode 100644 ui/base/cursor/cursor_wayland.cc
+
+diff --git a/ui/base/cursor/cursor_wayland.cc b/ui/base/cursor/cursor_wayland.cc
+new file mode 100644
+index 0000000..5471e06
+--- /dev/null
++++ b/ui/base/cursor/cursor_wayland.cc
+@@ -0,0 +1,15 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/base/cursor/cursor.h"
++
++namespace ui {
++
++void Cursor::RefCustomCursor() {
++}
++
++void Cursor::UnrefCustomCursor() {
++}
++
++}  // namespace ui
+diff --git a/ui/ui.gyp b/ui/ui.gyp
+index ee2f79d..c1836c2 100644
+--- a/ui/ui.gyp
++++ b/ui/ui.gyp
+@@ -144,6 +144,7 @@
+         'base/cursor/cursor_loader_win.h',
+         'base/cursor/cursor_loader_x11.cc',
+         'base/cursor/cursor_loader_x11.h',
++        'base/cursor/cursor_wayland.cc',
+         'base/cursor/cursor_win.cc',
+         'base/cursor/cursor_x11.cc',
+         'base/cursor/cursors_aura.cc',
+@@ -662,6 +663,7 @@
+             'base/cursor/cursor.h',
+             'base/cursor/cursor_loader_x11.cc',
+             'base/cursor/cursor_loader_x11.h',
++            'base/cursor/cursor_wayland.cc',
+             'base/cursor/cursor_win.cc',
+             'base/cursor/cursor_x11.cc',
+             'base/x/selection_owner.cc',
+-- 
+1.7.9.5
+

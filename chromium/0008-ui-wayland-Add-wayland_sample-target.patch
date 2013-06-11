@@ -1,0 +1,422 @@
+From 683161a84858cae42991a1829ea5b3f0c64802f3 Mon Sep 17 00:00:00 2001
+From: Tiago Vignatti <tiago.vignatti@intel.com>
+Date: Tue, 4 Jun 2013 15:12:26 -0300
+Subject: [PATCH 08/19] ui/wayland: Add wayland_sample target
+
+Useful for stressing MessagePump plugging with libwayland, Wayland native
+types, GL implementation and all the basics of Wayland system.
+
+ui_unittests is running also at this point; I'm not sure whether the results
+are satisfactory though:
+
+  [==========] 499 tests from 62 test cases ran. (5555 ms total)
+  [  PASSED  ] 499 tests.
+
+Signed-off-by: Tiago Vignatti <tiago.vignatti@intel.com>
+---
+ ui/wayland/demos/sample.cc |  239 ++++++++++++++++++++++++++++++++++++++++++++
+ ui/wayland/demos/util.cc   |   86 ++++++++++++++++
+ ui/wayland/demos/util.h    |   20 ++++
+ ui/wayland/wayland.gyp     |   21 ++++
+ 4 files changed, 366 insertions(+)
+ create mode 100644 ui/wayland/demos/sample.cc
+ create mode 100644 ui/wayland/demos/util.cc
+ create mode 100644 ui/wayland/demos/util.h
+
+diff --git a/ui/wayland/demos/sample.cc b/ui/wayland/demos/sample.cc
+new file mode 100644
+index 0000000..4af0d4f
+--- /dev/null
++++ b/ui/wayland/demos/sample.cc
+@@ -0,0 +1,239 @@
++// Copyright (c) 2011 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <EGL/egl.h>
++#include <GL/gl.h>
++#include <glib.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <X11/keysym.h>
++#include <wayland-client.h>
++#include <wayland-egl.h>
++
++#include "base/at_exit.h"
++#include "base/command_line.h"
++#include "base/logging.h"
++#include "base/memory/ref_counted.h"
++#include "base/message_loop/message_loop.h"
++#include "base/message_loop/message_pump_wayland.h"
++#include "base/wayland/wayland_event.h"
++#include "ui/gfx/rect.h"
++#include "ui/gl/gl_bindings.h"
++#include "ui/gl/gl_context.h"
++#include "ui/gl/gl_implementation.h"
++#include "ui/gl/gl_surface_egl.h"
++#include "ui/wayland/demos/util.h"
++#include "ui/wayland/wayland_display.h"
++#include "ui/wayland/wayland_widget.h"
++#include "ui/wayland/wayland_window.h"
++
++namespace {
++
++GMainLoop* g_loop = g_main_loop_new(NULL, FALSE);
++
++// This is a sample Wayland widget intended to exercise some basic
++// functionality. It also serves as an example of how to use the
++// Wayland wrappers.
++class Widget : public ui::WaylandWidget {
++ public:
++  explicit Widget(ui::WaylandDisplay* display);
++  virtual ~Widget();
++
++ private:
++  // Overwritten from WaylandWidget.
++  void OnMotionNotify(base::wayland::WaylandEvent event);
++  void OnButtonNotify(base::wayland::WaylandEvent event);
++  void OnKeyNotify(base::wayland::WaylandEvent event);
++  void OnPointerFocus(base::wayland::WaylandEvent event);
++  void OnKeyboardFocus(base::wayland::WaylandEvent event);
++
++  void OnGeometryChange(base::wayland::WaylandEvent event);
++
++  // This function is used to schedule a redraw. The |data| parameter is
++  // actually the WaylandWidget that needs to redraw.
++  static gboolean IdleRedraw(void* data);
++
++  // This is the actual redraw function. This will be called from the
++  // IdleRedraw function.
++  void Redraw();
++
++  // Pointer to the WaylandDisplay. We don't own it, but we do need it to
++  // perform some initialization.
++  ui::WaylandDisplay* display_;
++
++  // The Wayland window associated with the widget. The window is where the
++  // actual surface is stored.
++  ui::WaylandWindow window_;
++
++  // The current allocation of the window.
++  gfx::Rect allocation_;
++
++  scoped_refptr<gfx::GLSurface> surface_;
++  scoped_refptr<gfx::GLContext> context_;
++
++  GLuint program_;
++};
++
++Widget::Widget(ui::WaylandDisplay* display)
++    : display_(display),
++      window_(NULL, display),
++      allocation_(0, 0, 400, 400),
++      program_(0) {
++
++  window_.Flush();
++
++  // First we need to create the accelerated surface.
++  window_.set_egl_window(wl_egl_window_create(window_.surface(),
++                                     allocation_.width(),
++                                     allocation_.height()));
++
++  // Create the EGL window surface and the GL context.
++  surface_ = gfx::GLSurface::CreateViewGLSurface(false, &window_);
++  context_ = gfx::GLContext::CreateGLContext(NULL, surface_.get(),
++                                             gfx::PreferDiscreteGpu);
++
++  if (!context_->MakeCurrent(surface_.get()))
++    DLOG(ERROR) << "Failed to make surface current";
++
++  GLuint vert_shader = util::CompileShader(GL_VERTEX_SHADER,
++      "attribute vec4 vPosition;"
++      "void main() {"
++      "  gl_Position = vPosition;"
++      "}");
++
++  GLuint frag_shader = util::CompileShader(GL_FRAGMENT_SHADER,
++      "void main() {"
++      "  gl_FragColor = vec4(1.0, 1.0, 0.0, 1.0);"
++      "}");
++
++  program_ = glCreateProgram();
++  glAttachShader(program_, vert_shader);
++  glAttachShader(program_, frag_shader);
++  glLinkProgram(program_);
++
++  // Schedule the first paint.
++  g_idle_add(Widget::IdleRedraw, this);
++}
++
++Widget::~Widget() {
++  wl_egl_window_destroy(window_.egl_window());
++}
++
++void Widget::OnMotionNotify(base::wayland::WaylandEvent event) {
++  // TODO(dnicoara) Need to add the icons for the cursors.
++  if (event.motion.x > allocation_.width() * 0.75 ||
++      event.motion.x < allocation_.width() * 0.25 ||
++      event.motion.y > allocation_.height() * 0.75 ||
++      event.motion.y < allocation_.height() * 0.25) {
++    // cursor_.ChangeCursor(ui::WaylandCursor::ARROW_CURSOR);
++    LOG(INFO) << "ChangeCursor to arrow";
++  } else {
++    // cursor_.ChangeCursor(ui::WaylandCursor::HAND_CURSOR);
++    LOG(INFO) << "ChangeCursor to hand";
++  }
++}
++
++void Widget::OnButtonNotify(base::wayland::WaylandEvent event) {
++  if (event.type == base::wayland::WAYLAND_BUTTON)
++    LOG(INFO) << "Button: " << event.button.button;
++}
++
++void Widget::OnKeyNotify(base::wayland::WaylandEvent event) {
++  // Simple example of keyboard interaction. On up/down keys we will change
++  // the width of the window.
++  switch (event.key.sym) {
++    case XK_Up:
++      allocation_.set_width(allocation_.width() + 20);
++      break;
++    case XK_Down:
++      if (allocation_.width() > 20)
++        allocation_.set_width(allocation_.width() - 20);
++      break;
++    case XK_Escape:
++      g_main_loop_quit(g_loop);
++      return;
++    default:
++      break;
++  }
++
++  // Perform the resize and schedule a new paint.
++  wl_egl_window_resize(window_.egl_window(),
++                       allocation_.width(),
++                       allocation_.height(),
++                       0, 0);
++  g_idle_add(Widget::IdleRedraw, this);
++}
++
++void Widget::OnPointerFocus(base::wayland::WaylandEvent event) {
++}
++
++void Widget::OnKeyboardFocus(base::wayland::WaylandEvent event) {
++}
++
++void Widget::OnGeometryChange(base::wayland::WaylandEvent event) {
++  g_idle_add(Widget::IdleRedraw, this);
++}
++
++// static
++gboolean Widget::IdleRedraw(void* data) {
++  static_cast<Widget*>(data)->Redraw();
++  return FALSE;
++}
++
++void Widget::Redraw() {
++  // Draw a rectangle in the middle of the window.
++  static const GLfloat kVertices[] = {
++     0.5,  0.5, 0.0,
++    -0.5,  0.5, 0.0,
++    -0.5, -0.5, 0.0,
++     0.5, -0.5, 0.0
++  };
++
++  glViewport(allocation_.x(), allocation_.y(),
++             allocation_.width(), allocation_.height());
++  glClearColor(0.5, 0.0, 0.0, 0.5);
++  glClear(GL_COLOR_BUFFER_BIT);
++
++  glUseProgram(program_);
++
++  GLuint vert_location = glGetAttribLocation(program_, "vPosition");
++  glVertexAttribPointer(vert_location, 3, GL_FLOAT, GL_FALSE, 0, kVertices);
++  glEnableVertexAttribArray(vert_location);
++  glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
++
++  glFlush();
++  surface_->SwapBuffers();
++}
++
++}  // namespace
++
++int main(int argc, char** argv) {
++  CommandLine::Init(argc, argv);
++
++  base::AtExitManager exit_manager;
++
++  // Set the EGL platform to wayland otherwise it may think this is supposed to
++  // run on X.
++  setenv("EGL_PLATFORM", "wayland", 1);
++  if (!gfx::GLSurface::InitializeOneOff()) {
++    LOG(ERROR) << "Failed to initialize GLSurface";
++    return -1;
++  }
++
++  // Once EGL is initialized in the above step, get the Wayland display
++  // associated with the native display.
++  ui::WaylandDisplay* display = ui::WaylandDisplay::GetDisplay(
++      gfx::GLSurfaceEGL::GetNativeDisplay());
++
++  // Create a Wayland message pump. This will take care of processing the
++  // Wayland events.
++  base::MessagePumpWayland pump;
++
++  // Create our sample widget.
++  Widget widget(display);
++
++  g_main_loop_run(g_loop);
++  g_main_loop_unref(g_loop);
++  return 0;
++}
+diff --git a/ui/wayland/demos/util.cc b/ui/wayland/demos/util.cc
+new file mode 100644
+index 0000000..9dfe72a
+--- /dev/null
++++ b/ui/wayland/demos/util.cc
+@@ -0,0 +1,86 @@
++// Copyright (c) 2011 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/wayland/demos/util.h"
++
++#include "base/logging.h"
++#include "base/memory/scoped_ptr.h"
++#include "ui/gl/gl_bindings.h"
++
++namespace {
++
++void PrintFBOStatus(GLenum status) {
++  switch (status) {
++  case GL_FRAMEBUFFER_COMPLETE:
++    LOG(ERROR) << "Complete attachment";
++    break;
++  case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
++    LOG(ERROR) << "Incomplete attachment";
++    break;
++  case GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT:
++    LOG(ERROR) << "Incomplete missing attachment";
++    break;
++  case GL_FRAMEBUFFER_UNSUPPORTED:
++    LOG(ERROR) << "Unsupported";
++    break;
++  }
++}
++
++}  // namespace
++
++namespace util {
++
++GLuint CompileShader(GLenum type, const GLchar* source) {
++  GLuint shader = glCreateShader(type);
++  if (!shader)
++    return 0;
++
++  glShaderSource(shader, 1, &source, 0);
++  glCompileShader(shader);
++
++  GLint compiled;
++  glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
++  if (!compiled) {
++    GLint info_len = 0;
++    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &info_len);
++
++    if (info_len > 0) {
++//      scoped_array<char> info_log(new char[info_len]);
++//      glGetShaderInfoLog(shader, info_len, NULL, info_log.get());
++//      LOG(ERROR) << "Compile error: " <<  info_log.get();
++      return 0;
++    }
++  }
++  return shader;
++}
++
++// Create a FBO bound to the output texture as a color buffer.
++void CreateFBO(GLuint width, GLuint height, GLuint* fbo, GLuint color_texture) {
++  // Generate depth render buffer for FBO.
++  GLuint depth_buffer;
++
++  glGenRenderbuffersEXT(1, &depth_buffer);
++  glBindRenderbufferEXT(GL_RENDERBUFFER, depth_buffer);
++  glRenderbufferStorageEXT(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16,
++                           width, height);
++  glBindRenderbufferEXT(GL_RENDERBUFFER, 0);
++
++  // Generate the FBO.
++  glGenFramebuffersEXT(1, fbo);
++  glBindFramebufferEXT(GL_FRAMEBUFFER, *fbo);
++  glFramebufferTexture2DEXT(GL_FRAMEBUFFER,
++                            GL_COLOR_ATTACHMENT0,
++                            GL_TEXTURE_2D,
++                            color_texture,
++                            0);
++  glFramebufferRenderbufferEXT(GL_FRAMEBUFFER,
++                               GL_DEPTH_ATTACHMENT,
++                               GL_RENDERBUFFER,
++                               depth_buffer);
++
++  PrintFBOStatus(glCheckFramebufferStatusEXT(GL_FRAMEBUFFER));
++  glBindFramebufferEXT(GL_FRAMEBUFFER, 0);
++}
++
++}  // namespace util
+diff --git a/ui/wayland/demos/util.h b/ui/wayland/demos/util.h
+new file mode 100644
+index 0000000..098ea08
+--- /dev/null
++++ b/ui/wayland/demos/util.h
+@@ -0,0 +1,20 @@
++// Copyright (c) 2011 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef UI_WAYLAND_DEMOS_UTIL_H_
++#define UI_WAYLAND_DEMOS_UTIL_H_
++
++#include <GL/gl.h>
++
++namespace util {
++
++// Compiles a shader of |type| with the source code in |source|.
++GLuint CompileShader(GLenum type, const GLchar* source);
++
++// Creates a FBO with the given dimensions and stores the FBO id in |fbo|.
++void CreateFBO(GLuint width, GLuint height, GLuint* fbo, GLuint color_texture);
++
++}  // namespace util
++
++#endif  // UI_WAYLAND_DEMOS_UTIL_H_
+diff --git a/ui/wayland/wayland.gyp b/ui/wayland/wayland.gyp
+index 668bad0..38c0b62 100644
+--- a/ui/wayland/wayland.gyp
++++ b/ui/wayland/wayland.gyp
+@@ -37,5 +37,26 @@
+         'wayland_window.h',
+       ],
+     },
++    {
++      'target_name': 'wayland_sample',
++      'type': 'executable',
++      'dependencies': [
++        '../../base/base.gyp:base',
++        '../../build/linux/system.gyp:wayland',
++        '../ui.gyp:ui',
++        '../gl/gl.gyp:gl',
++        'wayland',
++      ],
++      'include_dirs': [
++        '.',
++        '../..',
++        'events',
++      ],
++      'sources': [
++        'demos/sample.cc',
++        'demos/util.cc',
++        'demos/util.h',
++      ],
++    },
+   ],
+ }
+-- 
+1.7.9.5
+

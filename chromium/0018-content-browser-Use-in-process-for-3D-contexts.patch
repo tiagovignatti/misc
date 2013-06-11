@@ -1,0 +1,38 @@
+From d8901dcce33b80cee2ca60f24c2fbc0317d59150 Mon Sep 17 00:00:00 2001
+From: Tiago Vignatti <tiago.vignatti@intel.com>
+Date: Wed, 8 May 2013 15:48:52 -0300
+Subject: [PATCH 18/19] content/browser: Use in-process for 3D contexts
+
+This has to be properly implemented later to use command buffer (GPU process).
+
+Signed-off-by: Tiago Vignatti <tiago.vignatti@intel.com>
+---
+ .../renderer_host/image_transport_factory.cc       |    5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/content/browser/renderer_host/image_transport_factory.cc b/content/browser/renderer_host/image_transport_factory.cc
+index f1c3142..8da4999 100644
+--- a/content/browser/renderer_host/image_transport_factory.cc
++++ b/content/browser/renderer_host/image_transport_factory.cc
+@@ -1046,6 +1046,10 @@ void ImageTransportFactory::Initialize() {
+   if (command_line->HasSwitch(switches::kTestCompositor)) {
+     ui::SetupTestCompositor();
+   }
++
++#if defined(USE_WAYLAND)
++    g_factory = new NoTransportFactory(NULL);
++#else
+   if (ui::IsTestCompositorEnabled()) {
+     g_factory = new NoTransportFactory(new ui::TestContextFactory);
+   } else if (command_line->HasSwitch(switches::kUIEnableSoftwareCompositing)) {
+@@ -1054,6 +1058,7 @@ void ImageTransportFactory::Initialize() {
+     g_factory = new GpuProcessTransportFactory;
+   }
+   ui::ContextFactory::SetInstance(g_factory->AsContextFactory());
++#endif
+ }
+ 
+ // static
+-- 
+1.7.9.5
+

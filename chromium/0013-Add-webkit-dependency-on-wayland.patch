@@ -1,0 +1,42 @@
+From 4f1bde76062ad26bfac13d4dcc4f7e9e0a1dcb1c Mon Sep 17 00:00:00 2001
+From: Tiago Vignatti <tiago.vignatti@intel.com>
+Date: Fri, 7 Jun 2013 13:21:56 -0300
+Subject: [PATCH 13/19] Add webkit dependency on wayland
+
+TODO: Actually glib probably has to go the direct_dependent_settings of wayland.
+
+Signed-off-by: Tiago Vignatti <tiago.vignatti@intel.com>
+---
+ webkit/common/webkit_common.gypi                   |    2 +-
+ .../compositor_bindings/compositor_bindings.gyp    |    2 ++
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/webkit/common/webkit_common.gypi b/webkit/common/webkit_common.gypi
+index 353efaf..dda28ba 100644
+--- a/webkit/common/webkit_common.gypi
++++ b/webkit/common/webkit_common.gypi
+@@ -61,7 +61,7 @@
+             'libraries': [ '-lXcursor', ],
+           },
+         }],
+-        ['use_ozone==0', {
++        ['use_ozone==0 and use_wayland==0', {
+           'sources!': [
+             'cursors/webcursor_null.cc',
+           ],
+diff --git a/webkit/renderer/compositor_bindings/compositor_bindings.gyp b/webkit/renderer/compositor_bindings/compositor_bindings.gyp
+index e2c7551..994a26c 100644
+--- a/webkit/renderer/compositor_bindings/compositor_bindings.gyp
++++ b/webkit/renderer/compositor_bindings/compositor_bindings.gyp
+@@ -46,6 +46,8 @@
+       'dependencies': [
+         '<(DEPTH)/skia/skia.gyp:skia',
+         '<(DEPTH)/cc/cc.gyp:cc',
++        '<(DEPTH)/build/linux/system.gyp:wayland',
++        '<(DEPTH)/build/linux/system.gyp:glib',
+         'webkit_compositor_bindings',
+       ],
+       'sources': [
+-- 
+1.7.9.5
+

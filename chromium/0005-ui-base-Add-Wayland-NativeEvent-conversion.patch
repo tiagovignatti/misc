@@ -1,0 +1,83 @@
+From fe412a1a74d1202b04d4ee8a36e250bd82beac87 Mon Sep 17 00:00:00 2001
+From: Tiago Vignatti <tiago.vignatti@intel.com>
+Date: Wed, 24 Apr 2013 19:44:54 -0300
+Subject: [PATCH 05/19] ui/base: Add Wayland NativeEvent conversion
+
+Signed-off-by: Tiago Vignatti <tiago.vignatti@intel.com>
+---
+ ui/base/events/event.cc |   32 +++++++++++++++++++++++++++++---
+ 1 file changed, 29 insertions(+), 3 deletions(-)
+
+diff --git a/ui/base/events/event.cc b/ui/base/events/event.cc
+index 1ade950..859c872 100644
+--- a/ui/base/events/event.cc
++++ b/ui/base/events/event.cc
+@@ -20,14 +20,23 @@
+ #include "ui/gfx/transform.h"
+ #include "ui/gfx/transform_util.h"
+ 
+-#if defined(USE_X11)
++#if defined(USE_WAYLAND)
++#include "base/wayland/wayland_event.h"
++#include "ui/base/keycodes/keyboard_code_conversion_wayland.h"
++#elif defined(USE_X11)
+ #include "ui/base/keycodes/keyboard_code_conversion_x.h"
+ #endif
+ 
+ namespace {
+ 
+ base::NativeEvent CopyNativeEvent(const base::NativeEvent& event) {
+-#if defined(USE_X11)
++#if defined(USE_WAYLAND)
++  if (!event)
++    return NULL;
++  base::wayland::WaylandEvent* copy = new base::wayland::WaylandEvent;
++  *copy = *event;
++  return copy;
++#elif defined(USE_X11)
+   if (!event || event->type == GenericEvent)
+     return NULL;
+   XEvent* copy = new XEvent;
+@@ -108,7 +117,9 @@ std::string EventTypeName(ui::EventType type) {
+ }
+ 
+ bool IsX11SendEventTrue(const base::NativeEvent& event) {
+-#if defined(USE_X11)
++#if defined(USE_WAYLAND)
++  return false;
++#elif defined(USE_X11)
+   if (event && event->xany.send_event)
+     return true;
+ #endif
+@@ -526,6 +537,14 @@ uint16 KeyEvent::GetCharacter() const {
+ #if defined(OS_WIN)
+   return (native_event().message == WM_CHAR) ? key_code_ :
+       GetCharacterFromKeyCode(key_code_, flags());
++#elif defined(USE_WAYLAND)
++  if (!native_event())
++    return ui::GetCharacterFromKeyCode(key_code_, flags());
++
++  uint16 ch = 0;
++  if (!IsControlDown())
++    ch = ui::GetCharacterFromWaylandEvent(native_event());
++  return ch ? ch : ui::GetCharacterFromKeyCode(key_code_, flags());
+ #elif defined(USE_X11)
+   if (!native_event())
+     return GetCharacterFromKeyCode(key_code_, flags());
+@@ -551,6 +570,13 @@ uint16 KeyEvent::GetUnmodifiedCharacter() const {
+   // Looks like there is no way to get unmodified character on Windows.
+   return (native_event().message == WM_CHAR) ? key_code_ :
+       GetCharacterFromKeyCode(key_code_, flags() & EF_SHIFT_DOWN);
++#elif defined(USE_WAYLAND)
++  if (!native_event())
++    return ui::GetCharacterFromKeyCode(key_code_, flags() & ui::EF_SHIFT_DOWN);
++
++  uint16 ch = ui::GetCharacterFromWaylandEvent(native_event());
++  return ch ? ch :
++      ui::GetCharacterFromKeyCode(key_code_, flags() & ui::EF_SHIFT_DOWN);
+ #elif defined(USE_X11)
+   if (!native_event())
+     return GetCharacterFromKeyCode(key_code_, flags() & EF_SHIFT_DOWN);
+-- 
+1.7.9.5
+

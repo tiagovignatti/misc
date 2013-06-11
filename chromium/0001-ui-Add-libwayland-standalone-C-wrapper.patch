@@ -1,0 +1,2486 @@
+From 4e9fad1aeff6ab949a63e35ea4406e9577471ae5 Mon Sep 17 00:00:00 2001
+From: Tiago Vignatti <tiago.vignatti@intel.com>
+Date: Tue, 4 Jun 2013 14:53:26 -0300
+Subject: [PATCH 01/19] ui: Add libwayland standalone C++ wrapper
+
+This is essentially an object-oriented wrapper over Wayland library. The
+immediate goal is to leverage Wayland system in the Chromium code-base,
+thus eventually Chrome and other Linux targets can benefit from it and
+remove their X11 dependencies.
+
+To use it throughout the code, a new platform macro USE_WAYLAND is being added.
+
+This patch updates and brings back the following past work:
+https://codereview.chromium.org/7457023
+
+Signed-off-by: Tiago Vignatti <tiago.vignatti@intel.com>
+---
+ build/common.gypi                               |   17 +-
+ build/filename_rules.gypi                       |    5 +
+ build/linux/system.gyp                          |   24 +
+ ui/wayland/wayland.gyp                          |   41 ++
+ ui/wayland/wayland_delegate.h                   |   42 ++
+ ui/wayland/wayland_display.cc                   |  315 +++++++++++++
+ ui/wayland/wayland_display.h                    |  204 ++++++++
+ ui/wayland/wayland_input_device.cc              |  568 +++++++++++++++++++++++
+ ui/wayland/wayland_input_device.h               |  214 +++++++++
+ ui/wayland/wayland_input_method_event_filter.cc |   41 ++
+ ui/wayland/wayland_input_method_event_filter.h  |   40 ++
+ ui/wayland/wayland_screen.cc                    |   78 ++++
+ ui/wayland/wayland_screen.h                     |   73 +++
+ ui/wayland/wayland_task.cc                      |   51 ++
+ ui/wayland/wayland_task.h                       |   64 +++
+ ui/wayland/wayland_widget.h                     |   32 ++
+ ui/wayland/wayland_window.cc                    |  278 +++++++++++
+ ui/wayland/wayland_window.h                     |  167 +++++++
+ 18 files changed, 2252 insertions(+), 2 deletions(-)
+ create mode 100644 ui/wayland/wayland.gyp
+ create mode 100644 ui/wayland/wayland_delegate.h
+ create mode 100644 ui/wayland/wayland_display.cc
+ create mode 100644 ui/wayland/wayland_display.h
+ create mode 100644 ui/wayland/wayland_input_device.cc
+ create mode 100644 ui/wayland/wayland_input_device.h
+ create mode 100644 ui/wayland/wayland_input_method_event_filter.cc
+ create mode 100644 ui/wayland/wayland_input_method_event_filter.h
+ create mode 100644 ui/wayland/wayland_screen.cc
+ create mode 100644 ui/wayland/wayland_screen.h
+ create mode 100644 ui/wayland/wayland_task.cc
+ create mode 100644 ui/wayland/wayland_task.h
+ create mode 100644 ui/wayland/wayland_widget.h
+ create mode 100644 ui/wayland/wayland_window.cc
+ create mode 100644 ui/wayland/wayland_window.h
+
+diff --git a/build/common.gypi b/build/common.gypi
+index 3fd1c77..a17216a 100644
+--- a/build/common.gypi
++++ b/build/common.gypi
+@@ -29,12 +29,16 @@
+ 
+             # Use a raw surface abstraction.
+             'use_ozone%': 0,
++
++            # Use Wayland system
++            'use_wayland%': 0,
+           },
+           # Copy conditionally-set variables out one scope.
+           'chromeos%': '<(chromeos)',
+           'use_aura%': '<(use_aura)',
+           'use_ash%': '<(use_ash)',
+           'use_ozone%': '<(use_ozone)',
++          'use_wayland%': '<(use_wayland)',
+ 
+           # Whether we are using Views Toolkit
+           'toolkit_views%': 0,
+@@ -99,6 +103,7 @@
+         'use_aura%': '<(use_aura)',
+         'use_ash%': '<(use_ash)',
+         'use_ozone%': '<(use_ozone)',
++        'use_wayland%': '<(use_wayland)',
+         'use_openssl%': '<(use_openssl)',
+         'enable_viewport%': '<(enable_viewport)',
+         'enable_hidpi%': '<(enable_hidpi)',
+@@ -132,7 +137,7 @@
+           }],
+ 
+           # Set toolkit_uses_gtk for the Chromium browser on Linux.
+-          ['(OS=="linux" or OS=="freebsd" or OS=="openbsd" or OS=="solaris") and use_aura==0 and use_ozone==0', {
++          ['(OS=="linux" or OS=="freebsd" or OS=="openbsd" or OS=="solaris") and use_aura==0 and use_ozone==0 and use_wayland==0', {
+             'toolkit_uses_gtk%': 1,
+           }, {
+             'toolkit_uses_gtk%': 0,
+@@ -180,6 +185,7 @@
+       'use_aura%': '<(use_aura)',
+       'use_ash%': '<(use_ash)',
+       'use_ozone%': '<(use_ozone)',
++      'use_wayland%': '<(use_wayland)',
+       'use_openssl%': '<(use_openssl)',
+       'enable_viewport%': '<(enable_viewport)',
+       'enable_hidpi%': '<(enable_hidpi)',
+@@ -454,7 +460,7 @@
+         }],
+ 
+         # Flags to use X11 on non-Mac POSIX platforms.
+-        ['OS=="win" or OS=="mac" or OS=="ios" or OS=="android" or use_ozone==1', {
++        ['OS=="win" or OS=="mac" or OS=="ios" or OS=="android" or use_ozone==1 or use_wayland==1', {
+           'use_x11%': 0,
+         }, {
+           'use_x11%': 1,
+@@ -754,6 +760,7 @@
+     'use_glib%': '<(use_glib)',
+     'use_pango%': '<(use_pango)',
+     'use_ozone%': '<(use_ozone)',
++    'use_wayland%': '<(use_wayland)',
+     'toolkit_uses_gtk%': '<(toolkit_uses_gtk)',
+     'use_x11%': '<(use_x11)',
+     'use_gnome_keyring%': '<(use_gnome_keyring)',
+@@ -1506,6 +1513,9 @@
+       ['use_ozone==1', {
+         'grit_defines': ['-D', 'use_ozone'],
+       }],
++      ['use_wayland==1', {
++        'grit_defines': ['-D', 'use_wayland'],
++      }],
+       ['file_manager_extension==1', {
+         'grit_defines': ['-D', 'file_manager_extension'],
+       }],
+@@ -1910,6 +1920,9 @@
+       ['use_ozone==1', {
+         'defines': ['USE_OZONE=1'],
+       }],
++      ['use_wayland==1', {
++        'defines': ['USE_WAYLAND=1'],
++      }],
+       ['use_default_render_theme==1', {
+         'defines': ['USE_DEFAULT_RENDER_THEME=1'],
+       }],
+diff --git a/build/filename_rules.gypi b/build/filename_rules.gypi
+index 214f530..0e49833 100644
+--- a/build/filename_rules.gypi
++++ b/build/filename_rules.gypi
+@@ -101,5 +101,10 @@
+                     ['exclude', '(^|/)ozone/'],
+       ]
+     }],
++    ['<(use_wayland)==0 or >(nacl_untrusted_build)==1', {
++      'sources/': [ ['exclude', '_wayland(_browsertest|_unittest)?\\.(h|cc)$'],
++                    ['exclude', '(^|/)wayland/'],
++      ]
++    }],
+   ]
+ }
+diff --git a/build/linux/system.gyp b/build/linux/system.gyp
+index 867553f..668756a 100644
+--- a/build/linux/system.gyp
++++ b/build/linux/system.gyp
+@@ -811,6 +811,30 @@
+       },
+     },
+     {
++      'target_name': 'wayland',
++      'type': 'none',
++      'conditions': [
++        ['use_wayland == 1', {
++          'cflags': [
++            '<!@(<(pkg-config) --cflags wayland-client wayland-cursor wayland-egl xkbcommon)',
++          ],
++          'direct_dependent_settings': {
++            'cflags': [
++              '<!@(<(pkg-config) --cflags wayland-client wayland-cursor wayland-egl xkbcommon)',
++            ],
++          },
++          'link_settings': {
++            'ldflags': [
++              '<!@(<(pkg-config) --libs-only-L --libs-only-other wayland-client wayland-cursor wayland-egl xkbcommon)',
++            ],
++            'libraries': [
++              '<!@(<(pkg-config) --libs-only-l wayland-client wayland-cursor wayland-egl xkbcommon)',
++            ],
++          },
++        }],
++      ],
++    },
++    {
+       'target_name': 'udev',
+       'type': 'none',
+       'conditions': [
+diff --git a/ui/wayland/wayland.gyp b/ui/wayland/wayland.gyp
+new file mode 100644
+index 0000000..668bad0
+--- /dev/null
++++ b/ui/wayland/wayland.gyp
+@@ -0,0 +1,41 @@
++# Copyright 2013 The Chromium Authors. All rights reserved.
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++{
++  'targets': [
++    {
++      'target_name': 'wayland',
++      'type': 'static_library',
++      'dependencies': [
++        '../../build/linux/system.gyp:wayland',
++        '../../base/base.gyp:base',
++        '../../base/base.gyp:base_i18n',
++        '../../base/third_party/dynamic_annotations/dynamic_annotations.gyp:dynamic_annotations',
++        '../../skia/skia.gyp:skia',
++        '../compositor/compositor.gyp:compositor',
++        '../ui.gyp:ui',
++        '../ui.gyp:ui_resources',
++      ],
++      'include_dirs': [
++        '.',
++        '../..',
++      ],
++      'sources': [
++        'wayland_display.cc',
++        'wayland_display.h',
++        'wayland_task.cc',
++        'wayland_task.h',
++        'wayland_input_device.cc',
++        'wayland_input_device.h',
++        'wayland_input_method_event_filter.cc',
++        'wayland_input_method_event_filter.h',
++        'wayland_screen.cc',
++        'wayland_screen.h',
++        'wayland_delegate.h',
++        'wayland_window.cc',
++        'wayland_window.h',
++      ],
++    },
++  ],
++}
+diff --git a/ui/wayland/wayland_delegate.h b/ui/wayland/wayland_delegate.h
+new file mode 100644
+index 0000000..2651258
+--- /dev/null
++++ b/ui/wayland/wayland_delegate.h
+@@ -0,0 +1,42 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef UI_WAYLAND_WAYLAND_DELEGATE_H_
++#define UI_WAYLAND_WAYLAND_DELEGATE_H_
++
++#include "ui/wayland/wayland_display.h"
++
++namespace base {
++namespace wayland {
++union WaylandEvent;
++}
++}
++
++namespace ui {
++
++// WaylandDelegate is an interface for processing Wayland events.
++class WaylandDelegate {
++ public:
++  virtual ~WaylandDelegate() {}
++
++  virtual void OnMouseEvent(base::wayland::WaylandEvent* event) = 0;
++  virtual void OnKeyNotify(base::wayland::WaylandEvent* event) = 0;
++  virtual void OnKeyboardEnter(base::wayland::WaylandEvent* event) = 0;
++  virtual void OnKeyboardLeave(base::wayland::WaylandEvent* event) = 0;
++  virtual void OnMouseEnter(base::wayland::WaylandEvent* event) = 0;
++  virtual void OnMouseLeave(base::wayland::WaylandEvent* event) = 0;
++  virtual void OnGeometryChange(base::wayland::WaylandEvent* event) = 0;
++	virtual void OnBoundsChanged(const gfx::Rect& old_bounds,
++    const gfx::Rect& new_bounds) = 0;
++  virtual void OnWindowDestroying() = 0;
++  virtual void OnWindowDestroyed() = 0;
++
++	// Returns the non-client component (see hit_test.h) containing |point|, in
++  // window coordinates.
++  virtual int GetNonClientComponent(const gfx::Point& point) const = 0;
++};
++
++}  // namespace ui
++
++#endif  // UI_WAYLAND_WAYLAND_DELEGATE_H_
+diff --git a/ui/wayland/wayland_display.cc b/ui/wayland/wayland_display.cc
+new file mode 100644
+index 0000000..b98753d
+--- /dev/null
++++ b/ui/wayland/wayland_display.cc
+@@ -0,0 +1,315 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/wayland/wayland_display.h"
++
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <wayland-client.h>
++#include <wayland-cursor.h>
++#include <wayland-egl.h>
++
++#include "ui/wayland/wayland_input_device.h"
++#include "ui/wayland/wayland_screen.h"
++#include "ui/wayland/wayland_window.h"
++#include "ui/wayland/wayland_input_method_event_filter.h"
++#include "base/message_loop.h"
++
++#ifdef USE_CAIRO_GLESV2
++#include <GLES2/gl2.h>
++#include <GLES2/gl2ext.h>
++#else
++#include <GL/gl.h>
++#endif
++
++#include <EGL/egl.h>
++#include <EGL/eglext.h>
++
++namespace ui {
++
++WaylandDisplay* g_display = NULL;
++
++WaylandDisplay* WaylandDisplay::GetDisplay()
++{
++  if (!g_display)
++    g_display = WaylandDisplay::Connect(NULL);
++  return g_display;
++}
++
++void WaylandDisplay::DestroyDisplay()
++{
++  if(g_display)
++    delete g_display;
++  g_display = NULL;
++}
++
++// static
++WaylandDisplay* WaylandDisplay::Connect(char* name)
++{
++  static const struct wl_registry_listener registry_listener = {
++    WaylandDisplay::DisplayHandleGlobal
++  };
++
++  WaylandDisplay* display = new WaylandDisplay(name);
++  if (!display->display_) {
++    delete display;
++    return NULL;
++  }
++
++  wl_display_set_user_data(display->display_, display);
++
++  display->registry_ =  wl_display_get_registry(display->display_);
++  wl_registry_add_listener(display->registry_, &registry_listener, display);
++
++  wl_display_dispatch(display->display_);
++
++  display->CreateCursors();
++
++  return display;
++}
++
++void WaylandDisplay::AddWindow(WaylandWindow* window)
++{
++  if(window)
++    window_list_.push_back(window);
++}
++
++void WaylandDisplay::AddTask(WaylandTask* task)
++{
++  if(task)
++    task_list_.push_back(task);
++}
++
++void WaylandDisplay::ProcessTasks()
++{
++  WaylandTask *task = NULL;
++
++  while(!task_list_.empty())
++  {
++    task = task_list_.front();
++    task->Run();
++    task_list_.pop_front();
++    delete task;
++  }
++}
++
++void WaylandDisplay::RemoveWindow(WaylandWindow* window)
++{
++  if(!window)
++    return;
++
++  WaylandTask *task = NULL;
++
++  for (std::list<WaylandTask*>::iterator i = task_list_.begin();
++      i != task_list_.end(); ++i) {
++    if((*i)->GetWindow() == window)
++    {
++      delete *i;
++      i = task_list_.erase(i);
++    }
++  }
++
++  for (std::list<WaylandWindow*>::iterator i = window_list_.begin();
++      i != window_list_.end(); ++i) {
++    if((*i) == window)
++    {
++      i = window_list_.erase(i);
++      break;
++    }
++  }
++
++  if(window_list_.size() < 1)
++  {
++    base::MessageLoop::current()->PostTask(FROM_HERE, base::MessageLoop::QuitClosure());
++  }
++}
++
++bool WaylandDisplay::IsWindow(WaylandWindow* window)
++{
++  for (std::list<WaylandWindow*>::iterator i = window_list_.begin();
++      i != window_list_.end(); ++i) {
++    if((*i) == window)
++    {
++      return true;
++    }
++  }
++
++  return false;
++}
++
++InputMethod* WaylandDisplay::GetInputMethod() const
++{
++  return input_method_filter_ ? input_method_filter_->GetInputMethod(): NULL;
++}
++
++// static
++WaylandDisplay* WaylandDisplay::GetDisplay(wl_display* display)
++{
++  return static_cast<WaylandDisplay*>(wl_display_get_user_data(display));
++}
++
++WaylandDisplay::WaylandDisplay(char* name) : display_(NULL),
++    cursor_theme_(NULL),
++    cursors_(NULL),
++    compositor_(NULL),
++    shell_(NULL),
++    shm_(NULL)
++{
++  display_ = wl_display_connect(name);
++  input_method_filter_ = new WaylandInputMethodEventFilter;
++}
++
++WaylandDisplay::~WaylandDisplay()
++{
++  if (window_list_.size() > 0)
++    fprintf(stderr, "toytoolkit warning: windows exist.\n");
++
++  if (task_list_.size() > 0)
++    fprintf(stderr, "toytoolkit warning: deferred tasks exist.\n");
++
++  for (std::list<WaylandInputDevice*>::iterator i = input_list_.begin();
++      i != input_list_.end(); ++i) {
++    delete *i;
++  }
++
++  for (std::list<WaylandScreen*>::iterator i = screen_list_.begin();
++      i != screen_list_.end(); ++i) {
++    delete *i;
++  }
++
++  DestroyCursors();
++
++  if (compositor_)
++    wl_compositor_destroy(compositor_);
++  if (shell_)
++    wl_shell_destroy(shell_);
++  if (shm_)
++    wl_shm_destroy(shm_);
++  if (display_)
++    wl_display_disconnect(display_);
++
++  delete input_method_filter_;
++}
++
++wl_surface* WaylandDisplay::CreateSurface()
++{
++  return wl_compositor_create_surface(compositor_);
++}
++
++std::list<WaylandScreen*> WaylandDisplay::GetScreenList() const {
++  return screen_list_;
++}
++
++// static
++void WaylandDisplay::DisplayHandleGlobal(void *data,
++    struct wl_registry *registry,
++    uint32_t name,
++    const char *interface,
++    uint32_t version)
++{
++
++  WaylandDisplay* disp = static_cast<WaylandDisplay*>(data);
++
++  if (strcmp(interface, "wl_compositor") == 0) {
++    disp->compositor_ = static_cast<wl_compositor*>(
++        wl_registry_bind(registry, name, &wl_compositor_interface, 1));
++  } else if (strcmp(interface, "wl_output") == 0) {
++    WaylandScreen* screen = new WaylandScreen(disp, name);
++    disp->screen_list_.push_back(screen);
++  } else if (strcmp(interface, "wl_seat") == 0) {
++    WaylandInputDevice *input_device = new WaylandInputDevice(disp, name);
++    disp->input_list_.push_back(input_device);
++  } else if (strcmp(interface, "wl_shell") == 0) {
++    disp->shell_ = static_cast<wl_shell*>(
++        wl_registry_bind(registry, name, &wl_shell_interface, 1));
++  } else if (strcmp(interface, "wl_shm") == 0) {
++    disp->shm_ = static_cast<wl_shm*>(
++        wl_registry_bind(registry, name, &wl_shm_interface, 1));
++  }
++}
++
++static const char *cursor_names[] = {
++  "bottom_left_corner",
++  "bottom_right_corner",
++  "bottom_side",
++  "grabbing",
++  "left_ptr",
++  "left_side",
++  "right_side",
++  "top_left_corner",
++  "top_right_corner",
++  "top_side",
++  "xterm",
++  "hand1",
++};
++
++void WaylandDisplay::CreateCursors()
++{
++  unsigned int i, array_size = sizeof(cursor_names) / sizeof(cursor_names[0]);
++  cursor_theme_ = wl_cursor_theme_load(NULL, 32, shm_);
++  cursors_ = new wl_cursor*[array_size];
++  memset(cursors_, 0, sizeof(wl_cursor*) * array_size);
++
++  for(i = 0; i < array_size; i++)
++    cursors_[i] = wl_cursor_theme_get_cursor(cursor_theme_, cursor_names[i]);
++}
++
++void WaylandDisplay::DestroyCursors()
++{
++  if(cursor_theme_)
++  {
++    wl_cursor_theme_destroy(cursor_theme_);
++    cursor_theme_ = NULL;
++  }
++
++  if(cursors_)
++  {
++    delete[] cursors_;
++    cursors_ = NULL;
++  }
++}
++
++void WaylandDisplay::SetPointerImage(WaylandInputDevice *device, uint32_t time, int index)
++{
++  struct wl_buffer *buffer;
++  struct wl_cursor *cursor;
++  struct wl_cursor_image *image;
++
++  if (index == device->GetCurrentPointerImage())
++    return;
++
++  cursor = cursors_[index];
++  if (!cursor)
++    return;
++
++  image = cursor->images[0];
++  buffer = wl_cursor_image_get_buffer(image);
++  if (!buffer)
++    return;
++
++  device->SetCurrentPointerImage(index);
++  // TODO:
++  //  wl_pointer_set_cursor(device->GetPointer(), time, buffer,
++  //                        image->hotspot_x, image->hotspot_y);
++}
++
++cairo_surface_t* WaylandDisplay::CreateSurfaceFromFile(const char *filename, gfx::Rect *rect)
++{
++  return NULL;
++}
++
++void WaylandDisplay::AddWindowCallback(const wl_callback_listener *listener, WaylandWindow *window)
++{
++  wl_callback *cb;
++  cb = wl_display_sync(display_);
++  wl_callback_add_listener(cb, listener, window);
++}
++
++cairo_surface_t* WaylandDisplay::CreateSurface(wl_surface *surface, gfx::Rect *rect, uint32_t flags)
++{
++  return NULL;
++}
++
++}  // namespace ui
+diff --git a/ui/wayland/wayland_display.h b/ui/wayland/wayland_display.h
+new file mode 100644
+index 0000000..d7df5d2
+--- /dev/null
++++ b/ui/wayland/wayland_display.h
+@@ -0,0 +1,204 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef UI_WAYLAND_WAYLAND_DISPLAY_H_
++#define UI_WAYLAND_WAYLAND_DISPLAY_H_
++
++#include <stdint.h>
++
++#include <list>
++
++#if !defined(__STDC_FORMAT_MACROS)
++#define __STDC_FORMAT_MACROS
++#endif
++
++#include "ui/gfx/point.h"
++#include "ui/gfx/rect.h"
++#include <wayland-client.h>
++#include "ui/wayland/wayland_task.h"
++
++#ifndef GLAPIENTRY
++#define GLAPIENTRY
++#endif
++
++#ifndef APIENTRY
++#define APIENTRY GLAPIENTRY
++#endif
++
++/* "P" suffix to be used for a pointer to a function */
++#ifndef APIENTRYP
++#define APIENTRYP APIENTRY *
++#endif
++
++typedef unsigned int	GLenum;
++typedef void* GLeglImageOES;
++typedef void (APIENTRYP PFNGLEGLIMAGETARGETTEXTURE2DOESPROC) (GLenum target, GLeglImageOES image);
++
++struct wl_compositor;
++struct wl_display;
++struct wl_surface;
++struct wl_shell;
++struct wl_shm;
++struct wl_data_device_manager;
++struct wl_list;
++struct wl_buffer;
++struct wl_cursor_theme;
++struct wl_cursor;
++
++struct _cairo_surface;
++typedef struct _cairo_surface cairo_surface_t;
++struct _cairo_device;
++typedef struct _cairo_device cairo_device_t;
++struct _cairo_rectangle_int;
++typedef struct _cairo_rectangle_int cairo_rectangle_int_t;
++
++#include <EGL/eglplatform.h>
++typedef unsigned int EGLBoolean;
++typedef unsigned int EGLenum;
++typedef void *EGLConfig;
++typedef void *EGLContext;
++typedef void *EGLDisplay;
++typedef void *EGLSurface;
++typedef void *EGLClientBuffer;
++
++typedef void *EGLImageKHR;
++typedef EGLImageKHR (EGLAPIENTRYP PFNEGLCREATEIMAGEKHRPROC) (EGLDisplay dpy, EGLContext ctx, EGLenum target, EGLClientBuffer buffer, const EGLint *attrib_list);
++typedef EGLBoolean (EGLAPIENTRYP PFNEGLDESTROYIMAGEKHRPROC) (EGLDisplay dpy, EGLImageKHR image);
++
++struct wl_compositor;
++struct wl_display;
++struct wl_shell;
++struct wl_shm;
++struct wl_surface;
++struct wl_shell_surface;
++
++namespace ui {
++
++class WaylandBuffer;
++class WaylandInputDevice;
++class WaylandScreen;
++class WaylandWindow;
++class WaylandInputMethodEventFilter;
++class InputMethod;
++
++enum pointer_type {
++  POINTER_BOTTOM_LEFT,
++  POINTER_BOTTOM_RIGHT,
++  POINTER_BOTTOM,
++  POINTER_DRAGGING,
++  POINTER_LEFT_PTR,
++  POINTER_LEFT,
++  POINTER_RIGHT,
++  POINTER_TOP_LEFT,
++  POINTER_TOP_RIGHT,
++  POINTER_TOP,
++  POINTER_IBEAM,
++  POINTER_HAND1,
++};
++
++enum {
++  POINTER_DEFAULT = 100,
++  POINTER_UNSET
++};
++
++// WaylandDisplay is a wrapper around wl_display. Once we get a valid
++// wl_display, the Wayland server will send different events to register
++// the Wayland compositor, shell, screens, input devices, ...
++class WaylandDisplay {
++ public:
++  // Attempt to create a connection to the display. If it fails this returns
++  // NULL
++  static WaylandDisplay* Connect(char* name);
++
++  // Get the WaylandDisplay associated with the native Wayland display
++  static WaylandDisplay* GetDisplay(wl_display* display);
++
++  static WaylandDisplay* GetDisplay();
++  static void DestroyDisplay();
++
++  virtual ~WaylandDisplay();
++
++  // Creates a wayland surface. This is used to create a window surface.
++  // The returned pointer should be deleted by the caller.
++  wl_surface* CreateSurface();
++
++  // Returns a pointer to the wl_display.
++  wl_display* display() const { return display_; }
++
++  wl_registry* registry() const { return registry_; }
++
++  // Returns a list of the registered screens.
++  std::list<WaylandScreen*> GetScreenList() const;
++
++  wl_shell* shell() const { return shell_; }
++
++  wl_shm* shm() const { return shm_; }
++
++  void DestroyEGLImage(EGLImageKHR image);
++
++  void AddWindow(WaylandWindow* window);
++  void RemoveWindow(WaylandWindow* window);
++  bool IsWindow(WaylandWindow* window);
++
++  void AddTask(WaylandTask* task);
++  void ProcessTasks();
++
++  cairo_surface_t* CreateSurfaceFromFile(const char *filename, gfx::Rect *rect);
++  cairo_surface_t* CreateSurface(wl_surface *surface, gfx::Rect *rect, uint32_t flags);
++
++  void AddWindowCallback(const wl_callback_listener *listener, WaylandWindow *window);
++
++  void SetPointerImage(WaylandInputDevice* device, uint32_t time, int pointer);
++
++  InputMethod* GetInputMethod() const;
++
++  void SetSerial(uint32_t serial) { serial_ = serial; }
++  uint32_t GetSerial() const { return serial_; }
++
++ private:
++  WaylandDisplay(char* name);
++  void CreateCursors();
++  void DestroyCursors();
++
++  // This handler resolves all server events used in initialization. It also
++  // handles input device registration, screen registration.
++  static void DisplayHandleGlobal(void *data, struct wl_registry *registry,
++                                  uint32_t name, const char *interface,
++                                  uint32_t version);
++
++  // WaylandDisplay manages the memory of all these pointers.
++  wl_display* display_;
++  wl_registry *registry_;
++  wl_compositor* compositor_;
++  wl_shell* shell_;
++  wl_shm* shm_;
++
++  std::list<WaylandScreen*> screen_list_;
++  std::list<WaylandInputDevice*> input_list_;
++  std::list<WaylandTask*> task_list_;
++  std::list<WaylandWindow*> window_list_;
++  WaylandInputMethodEventFilter *input_method_filter_;
++
++  EGLDisplay dpy_;
++  EGLConfig argb_config_;
++  EGLContext argb_ctx_;
++  cairo_device_t *argb_device_;
++  uint32_t serial_;
++
++  wl_cursor_theme *cursor_theme_;
++  wl_cursor **cursors_;
++
++  PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_target_texture_2d_;
++  PFNEGLCREATEIMAGEKHRPROC create_image_;
++  PFNEGLDESTROYIMAGEKHRPROC destroy_image_;
++
++  friend class WaylandEGLImageSurfaceData;
++  friend class WaylandEGLWindowSurfaceData;
++
++  DISALLOW_COPY_AND_ASSIGN(WaylandDisplay);
++};
++
++}  // namespace ui
++
++#endif  // UI_WAYLAND_WAYLAND_DISPLAY_H_
+diff --git a/ui/wayland/wayland_input_device.cc b/ui/wayland/wayland_input_device.cc
+new file mode 100644
+index 0000000..94d8571
+--- /dev/null
++++ b/ui/wayland/wayland_input_device.cc
+@@ -0,0 +1,568 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/wayland/wayland_input_device.h"
++
++#include <X11/X.h>
++#include <sys/mman.h>
++#include <linux/input.h>
++#include <wayland-client.h>
++
++#include <wayland-egl.h>
++#include <GLES2/gl2.h>
++#include <GLES2/gl2ext.h>
++#include <EGL/egl.h>
++#include <EGL/eglext.h>
++
++#include "base/wayland/wayland_event.h"
++#include "ui/wayland/wayland_delegate.h"
++#include "ui/wayland/wayland_window.h"
++#include "ui/base/events/event.h"
++#include "ui/base/events/event_constants.h"
++#include "ui/base/hit_test.h"
++#include "ui/base/ui_base_types.h"
++
++using namespace base::wayland;
++
++namespace ui {
++
++// static
++BoundsChangeType WaylandInputDevice::GetBoundsChangeForWindowComponent(int component)
++{
++  BoundsChangeType bounds_change = kBoundsChange_None;
++  switch (component) {
++    case HTCAPTION:
++      bounds_change = kBoundsChange_Repositions;
++      break;
++    case HTTOPLEFT:
++    case HTTOP:
++    case HTTOPRIGHT:
++    case HTLEFT:
++    case HTBOTTOMLEFT:
++    case HTRIGHT:
++    case HTBOTTOMRIGHT:
++    case HTBOTTOM:
++      //case HTGROWBOX:
++      bounds_change = kBoundsChange_Resizes;
++      break;
++    default:
++      break;
++  }
++  return bounds_change;
++}
++
++// static
++int WaylandInputDevice::GetPointerImageForWindowComponent(int component)
++{
++  WindowLocation location = WaylandInputDevice::GetLocationForWindowComponent(component);
++
++  switch (location) {
++    case WINDOW_RESIZING_TOP:
++      return CURSOR_TOP;
++    case WINDOW_RESIZING_BOTTOM:
++      return CURSOR_BOTTOM;
++    case WINDOW_RESIZING_LEFT:
++      return CURSOR_LEFT;
++    case WINDOW_RESIZING_RIGHT:
++      return CURSOR_RIGHT;
++    case WINDOW_RESIZING_TOP_LEFT:
++      return CURSOR_TOP_LEFT;
++    case WINDOW_RESIZING_TOP_RIGHT:
++      return CURSOR_TOP_RIGHT;
++    case WINDOW_RESIZING_BOTTOM_LEFT:
++      return CURSOR_BOTTOM_LEFT;
++    case WINDOW_RESIZING_BOTTOM_RIGHT:
++      return CURSOR_BOTTOM_RIGHT;
++    case WINDOW_EXTERIOR:
++    case WINDOW_TITLEBAR:
++    default:
++      return CURSOR_LEFT_PTR;
++  }
++}
++
++// static
++WindowLocation WaylandInputDevice::GetLocationForWindowComponent(int component)
++{
++  WindowLocation location = WINDOW_INTERIOR;
++  switch (component) {
++    case HTCAPTION:
++      location = WINDOW_TITLEBAR;
++      break;
++    case HTTOPLEFT:
++      location = WINDOW_RESIZING_TOP_LEFT;
++      break;
++    case HTTOP:
++      location = WINDOW_RESIZING_TOP;
++      break;
++    case HTTOPRIGHT:
++      location = WINDOW_RESIZING_TOP_RIGHT;
++      break;
++    case HTLEFT:
++      location = WINDOW_RESIZING_LEFT;
++      break;
++    case HTBOTTOMLEFT:
++      location = WINDOW_RESIZING_BOTTOM_LEFT;
++      break;
++    case HTRIGHT:
++      location = WINDOW_RESIZING_RIGHT;
++      break;
++    case HTBOTTOMRIGHT:
++      location = WINDOW_RESIZING_BOTTOM_RIGHT;
++      break;
++    case HTBOTTOM:
++      location = WINDOW_RESIZING_BOTTOM;
++      break;
++    default:
++      break;
++  }
++  return location;
++}
++
++WaylandInputDevice::WaylandInputDevice(WaylandDisplay* disp, uint32_t id)
++  : input_seat_(NULL),
++    display_(disp->display()),
++    current_pointer_image_(CURSOR_LEFT_PTR),
++    input_pointer_(NULL),
++    input_keyboard_(NULL),
++    pointer_focus_(NULL),
++    keyboard_focus_(NULL),
++    keyboard_modifiers_(0)
++{
++  static const struct wl_seat_listener kInputSeatListener = {
++    WaylandInputDevice::OnSeatCapabilities,
++  };
++
++  input_seat_ = static_cast<wl_seat*>(
++      wl_registry_bind(disp->registry(), id, &wl_seat_interface, 1));
++  wl_seat_add_listener(input_seat_, &kInputSeatListener, this);
++  wl_seat_set_user_data(input_seat_, this);
++
++  InitXKB();
++}
++
++WaylandInputDevice::~WaylandInputDevice()
++{
++  if (input_seat_)
++    wl_seat_destroy(input_seat_);
++
++  FiniXKB();
++}
++
++void WaylandInputDevice::InitXKB()
++{
++  xkb_.context = xkb_context_new((xkb_context_flags)0);
++  if (!xkb_.context) {
++    return;
++  }
++}
++
++void WaylandInputDevice::FiniXKB()
++{
++  if (xkb_.state)
++    xkb_state_unref(xkb_.state);
++  if (xkb_.keymap)
++    xkb_map_unref(xkb_.keymap);
++  if (xkb_.context)
++    xkb_context_unref(xkb_.context);
++}
++
++void WaylandInputDevice::OnSeatCapabilities(void *data, wl_seat *seat, uint32_t caps)
++{
++  WaylandInputDevice* device = static_cast<WaylandInputDevice*>(data);
++
++  static const struct wl_pointer_listener kInputPointerListener = {
++    WaylandInputDevice::OnPointerEnter,
++    WaylandInputDevice::OnPointerLeave,
++    WaylandInputDevice::OnMotionNotify,
++    WaylandInputDevice::OnButtonNotify,
++    WaylandInputDevice::OnAxisNotify,
++  };
++
++  if ((caps & WL_SEAT_CAPABILITY_POINTER) && !device->input_pointer_) {
++    device->input_pointer_ = wl_seat_get_pointer(seat);
++    wl_pointer_set_user_data(device->input_pointer_, device);
++    wl_pointer_add_listener(device->input_pointer_, &kInputPointerListener,
++        device);
++  } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && device->input_pointer_) {
++    wl_pointer_destroy(device->input_pointer_);
++    device->input_pointer_ = NULL;
++  }
++
++  static const struct wl_keyboard_listener kInputKeyboardListener = {
++    WaylandInputDevice::OnKeyboardKeymap,
++    WaylandInputDevice::OnKeyboardEnter,
++    WaylandInputDevice::OnKeyboardLeave,
++    WaylandInputDevice::OnKeyNotify,
++    WaylandInputDevice::OnKeyModifiers,
++  };
++
++  if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !device->input_keyboard_) {
++    device->input_keyboard_ = wl_seat_get_keyboard(seat);
++    wl_keyboard_set_user_data(device->input_keyboard_, device);
++    wl_keyboard_add_listener(device->input_keyboard_, &kInputKeyboardListener,
++        device);
++  } else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && device->input_keyboard_) {
++    wl_keyboard_destroy(device->input_keyboard_);
++    device->input_keyboard_ = NULL;
++  }
++}
++
++void WaylandInputDevice::OnMotionNotify(void* data,
++    wl_pointer* input_pointer,
++    uint32_t time,
++    wl_fixed_t sx_w,
++    wl_fixed_t sy_w)
++{
++  WaylandInputDevice* device = static_cast<WaylandInputDevice*>(data);
++  WaylandWindow* window = device->pointer_focus_;
++  GLfloat sx = wl_fixed_to_double(sx_w);
++  GLfloat sy = wl_fixed_to_double(sy_w);
++
++  device->surface_position_.SetPoint(sx, sy);
++
++  WaylandEvent event;
++  event.type = WAYLAND_MOTION;
++  event.motion.time = time;
++  event.motion.modifiers = device->keyboard_modifiers_;
++  event.motion.x = sx;
++  event.motion.y = sy;
++
++  if (!window->delegate())
++    return;
++
++  gfx::Point pt(event.motion.x, event.motion.y);
++  int component = window->delegate()->GetNonClientComponent(pt);
++  BoundsChangeType type = WaylandInputDevice::GetBoundsChangeForWindowComponent(component);
++
++  switch(type)
++  {
++    case kBoundsChange_Resizes:
++      WaylandDisplay::GetDisplay(device->display_)->SetPointerImage(
++          device, time, WaylandInputDevice::GetPointerImageForWindowComponent(component));
++      break;
++    case kBoundsChange_Repositions:
++    default:
++      WaylandDisplay::GetDisplay(device->display_)->SetPointerImage(
++          device, time, CURSOR_LEFT_PTR);
++      break;
++  }
++
++  if(type == kBoundsChange_None)
++    window->delegate()->OnMouseEvent(&event);
++}
++
++void WaylandInputDevice::OnAxisNotify(void* data,
++    wl_pointer* input_pointer,
++    uint32_t time,
++    uint32_t axis,
++    int32_t value)
++{
++  WaylandInputDevice* device = static_cast<WaylandInputDevice*>(data);
++  WaylandWindow* window = device->pointer_focus_;
++
++  WaylandEvent event;
++  event.type = WAYLAND_BUTTON;
++  event.button.time = time;
++  event.button.state = 1;
++  event.button.modifiers = device->keyboard_modifiers_;
++  event.button.x = device->surface_position_.x();
++  event.button.y = device->surface_position_.y();
++
++  switch (axis) {
++  case WL_POINTER_AXIS_VERTICAL_SCROLL:
++    event.button.button = value < 0 ? 4 : 5;
++    break;
++  case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
++    event.button.button = value < 0 ? 6 : 7;
++    break;
++  }
++
++  if (!window->delegate())
++    return;
++
++  window->delegate()->OnMouseEvent(&event);
++}
++
++void WaylandInputDevice::OnButtonNotify(void* data,
++    wl_pointer* input_pointer,
++    uint32_t serial,
++    uint32_t time,
++    uint32_t button,
++    uint32_t state)
++{
++  WaylandInputDevice* device = static_cast<WaylandInputDevice*>(data);
++  WaylandWindow* window = device->pointer_focus_;
++
++  WaylandDisplay::GetDisplay(device->display_)->SetSerial(serial);
++
++  WaylandEvent event;
++  event.type = WAYLAND_BUTTON;
++  event.button.time = time;
++  event.button.button = button;
++  event.button.state = state;
++  event.button.modifiers = device->keyboard_modifiers_;
++  event.button.x = device->surface_position_.x();
++  event.button.y = device->surface_position_.y();
++
++  if (!window->delegate())
++    return;
++
++  gfx::Point pt(event.button.x, event.button.y);
++  int component = window->delegate()->GetNonClientComponent(pt);
++  BoundsChangeType type = WaylandInputDevice::GetBoundsChangeForWindowComponent(component);
++
++  if(WaylandDisplay::GetDisplay(device->display_)->shell() &&
++      button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED)
++  {
++    switch(type)
++    {
++      case kBoundsChange_Repositions:
++        if(!window->shell_surface())
++          break;
++
++        WaylandDisplay::GetDisplay(device->display_)->SetPointerImage(
++            device, time, CURSOR_DRAGGING);
++        wl_shell_surface_move(window->shell_surface(), device->input_seat_, serial);
++        break;
++      case kBoundsChange_Resizes:
++        if(!window->shell_surface())
++          break;
++
++        wl_shell_surface_resize(window->shell_surface(), device->input_seat_, serial,
++            WaylandInputDevice::GetLocationForWindowComponent(component));
++        break;
++      default:
++        break;
++    }
++  }
++
++  if(type == kBoundsChange_None)
++    window->delegate()->OnMouseEvent(&event);
++}
++
++void WaylandInputDevice::OnKeyNotify(void* data,
++    wl_keyboard* input_keyboard,
++    uint32_t serial,
++    uint32_t time,
++    uint32_t key,
++    uint32_t state)
++{
++  WaylandInputDevice* device = static_cast<WaylandInputDevice*>(data);
++  WaylandWindow* window = device->keyboard_focus_;
++  uint32_t code, num_syms;
++  const xkb_keysym_t *syms;
++  xkb_keysym_t sym;
++  xkb_mod_mask_t mask;
++
++  WaylandDisplay::GetDisplay(device->display_)->SetSerial(serial);
++
++  WaylandEvent event;
++  event.type = WAYLAND_KEY;
++  event.key.time = time;
++  event.key.key = key;
++  event.key.state = state;
++
++  code = key + 8;
++  num_syms = xkb_key_get_syms(device->xkb_.state, code, &syms);
++
++  mask = xkb_state_serialize_mods(device->xkb_.state,
++      (xkb_state_component)(XKB_STATE_DEPRESSED | XKB_STATE_LATCHED));
++  device->keyboard_modifiers_ = 0;
++  if (mask & device->xkb_.control_mask)
++    device->keyboard_modifiers_ |= MOD_CONTROL_MASK;
++  if (mask & device->xkb_.alt_mask)
++    device->keyboard_modifiers_ |= MOD_ALT_MASK;
++  if (mask & device->xkb_.shift_mask)
++    device->keyboard_modifiers_ |= MOD_SHIFT_MASK;
++
++  if(num_syms == 1)
++    event.key.sym = syms[0];
++  else
++    event.key.sym = NoSymbol;
++  event.key.modifiers = device->keyboard_modifiers_;
++
++  if (!window->delegate())
++    return;
++
++  // TODO: Add key processing
++  //
++  window->delegate()->OnKeyNotify(&event);
++}
++
++void WaylandInputDevice::OnKeyModifiers(void *data, wl_keyboard *keyboard,
++    uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched,
++    uint32_t mods_locked, uint32_t group)
++{
++  WaylandInputDevice* device = static_cast<WaylandInputDevice*>(data);
++
++  xkb_state_update_mask(device->xkb_.state, mods_depressed, mods_latched,
++      mods_locked, 0, 0, group);
++}
++
++void WaylandInputDevice::OnPointerEnter(void* data,
++    wl_pointer* input_pointer,
++    uint32_t serial,
++    wl_surface* surface,
++    wl_fixed_t sx_w,
++    wl_fixed_t sy_w)
++{
++  WaylandInputDevice* device = static_cast<WaylandInputDevice*>(data);
++  WaylandWindow* window;
++
++  GLfloat sx = wl_fixed_to_double(sx_w);
++  GLfloat sy = wl_fixed_to_double(sy_w);
++
++  WaylandDisplay::GetDisplay(device->display_)->SetSerial(serial);
++  device->pointer_enter_serial_ = serial;
++
++  WaylandEvent event;
++  event.type = WAYLAND_POINTER_FOCUS;
++  event.pointer_focus.serial = serial;
++  event.pointer_focus.x = (int32_t)sx;
++  event.pointer_focus.y = (int32_t)sy;
++
++  // If we have a surface, then a new window is in focus
++  event.pointer_focus.state = 1;
++  window = static_cast<WaylandWindow*>(wl_surface_get_user_data(surface));
++  device->pointer_focus_ = window;
++
++  if (!window->delegate())
++    return;
++
++  window->delegate()->OnMouseEnter(&event);
++}
++
++void WaylandInputDevice::OnPointerLeave(void* data,
++    wl_pointer* input_pointer,
++    uint32_t serial,
++    wl_surface* surface)
++{
++  WaylandInputDevice* device = static_cast<WaylandInputDevice*>(data);
++  WaylandWindow* window = device->pointer_focus_;
++
++  WaylandDisplay::GetDisplay(device->display_)->SetSerial(serial);
++
++  WaylandEvent event;
++  event.type = WAYLAND_POINTER_FOCUS;
++  event.pointer_focus.serial = serial;
++
++  // If we have a window, then this means it loses focus
++  if (window) {
++    if(!WaylandDisplay::GetDisplay(device->display_)->IsWindow(window))
++      return;
++
++    event.pointer_focus.state = 0;
++    device->pointer_focus_ = NULL;
++    device->current_pointer_image_ = POINTER_UNSET;
++
++    if (!window->delegate())
++      return;
++
++    window->delegate()->OnMouseLeave(&event);
++  }
++}
++
++void WaylandInputDevice::OnKeyboardKeymap(void *data,
++    struct wl_keyboard *keyboard,
++    uint32_t format, int fd, uint32_t size)
++{
++  WaylandInputDevice* device = static_cast<WaylandInputDevice*>(data);
++  char *map_str;
++
++  if (!data) {
++    close(fd);
++    return;
++  }
++
++  if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
++    close(fd);
++    return;
++  }
++
++  map_str = (char*) mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
++  if (map_str == MAP_FAILED) {
++    close(fd);
++    return;
++  }
++
++  device->xkb_.keymap = xkb_map_new_from_string(device->xkb_.context,
++      map_str, XKB_KEYMAP_FORMAT_TEXT_V1, (xkb_map_compile_flags)0);
++  munmap(map_str, size);
++  close(fd);
++  if (!device->xkb_.keymap) {
++    return;
++  }
++
++  device->xkb_.state = xkb_state_new(device->xkb_.keymap);
++  if (!device->xkb_.state) {
++    xkb_map_unref(device->xkb_.keymap);
++    device->xkb_.keymap = NULL;
++    return;
++  }
++
++  device->xkb_.control_mask =
++    1 << xkb_map_mod_get_index(device->xkb_.keymap, "Control");
++  device->xkb_.alt_mask =
++    1 << xkb_map_mod_get_index(device->xkb_.keymap, "Mod1");
++  device->xkb_.shift_mask =
++    1 << xkb_map_mod_get_index(device->xkb_.keymap, "Shift");
++}
++
++void WaylandInputDevice::OnKeyboardEnter(void* data,
++    wl_keyboard* input_keyboard,
++    uint32_t serial,
++    wl_surface* surface,
++    wl_array* keys)
++{
++  WaylandInputDevice* device = static_cast<WaylandInputDevice*>(data);
++  WaylandWindow* window;
++
++  WaylandDisplay::GetDisplay(device->display_)->SetSerial(serial);
++  window = device->keyboard_focus_ =
++    static_cast<WaylandWindow*>(wl_surface_get_user_data(surface));
++
++  WaylandEvent event;
++  event.type = WAYLAND_KEYBOARD_FOCUS;
++  event.keyboard_focus.serial = serial;
++  device->keyboard_modifiers_ = 0;
++  event.keyboard_focus.modifiers = device->keyboard_modifiers_;
++  event.keyboard_focus.state = 1;
++
++  if (!window->delegate())
++    return;
++
++  window->delegate()->OnKeyboardEnter(&event);
++}
++
++void WaylandInputDevice::OnKeyboardLeave(void* data,
++    wl_keyboard* input_keyboard,
++    uint32_t serial,
++    wl_surface* surface)
++{
++  WaylandInputDevice* device = static_cast<WaylandInputDevice*>(data);
++  WaylandWindow* window = device->keyboard_focus_;
++
++  WaylandDisplay::GetDisplay(device->display_)->SetSerial(serial);
++
++  WaylandEvent event;
++  event.type = WAYLAND_KEYBOARD_FOCUS;
++  event.keyboard_focus.serial = serial;
++  device->keyboard_modifiers_ = 0;
++
++  // If there is a window, then it loses focus
++  if (window) {
++    if(!WaylandDisplay::GetDisplay(device->display_)->IsWindow(window))
++      return;
++
++    event.keyboard_focus.state = 0;
++    device->keyboard_focus_ = NULL;
++
++    if (!window->delegate())
++      return;
++
++    window->delegate()->OnKeyboardLeave(&event);
++  }
++}
++
++}  // namespace ui
+diff --git a/ui/wayland/wayland_input_device.h b/ui/wayland/wayland_input_device.h
+new file mode 100644
+index 0000000..ad27cf1
+--- /dev/null
++++ b/ui/wayland/wayland_input_device.h
+@@ -0,0 +1,214 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef UI_WAYLAND_WAYLAND_INPUT_DEVICE_H_
++#define UI_WAYLAND_WAYLAND_INPUT_DEVICE_H_
++
++#include <stdint.h>
++
++#include <xkbcommon/xkbcommon.h>
++#include "base/basictypes.h"
++#include "ui/gfx/point.h"
++#include "ui/wayland/wayland_delegate.h"
++
++#define MOD_SHIFT_MASK		0x01
++#define MOD_ALT_MASK		0x02
++#define MOD_CONTROL_MASK	0x04
++
++struct wl_array;
++struct wl_buffer;
++struct wl_display;
++struct wl_input_device;
++struct wl_surface;
++
++namespace ui {
++
++class WaylandWindow;
++
++enum CursorType {
++  CURSOR_BOTTOM_LEFT,
++  CURSOR_BOTTOM_RIGHT,
++  CURSOR_BOTTOM,
++  CURSOR_DRAGGING,
++  CURSOR_LEFT_PTR,
++  CURSOR_LEFT,
++  CURSOR_RIGHT,
++  CURSOR_TOP_LEFT,
++  CURSOR_TOP_RIGHT,
++  CURSOR_TOP,
++  CURSOR_IBEAM,
++  CURSOR_HAND1,
++};
++
++// Constants to identify the type of resize.
++enum BoundsChangeType
++{
++  kBoundsChange_None = 0,
++  kBoundsChange_Repositions,
++  kBoundsChange_Resizes,
++};
++
++enum WindowLocation {
++  WINDOW_INTERIOR = 0,
++  WINDOW_RESIZING_TOP = 1,
++  WINDOW_RESIZING_BOTTOM = 2,
++  WINDOW_RESIZING_LEFT = 4,
++  WINDOW_RESIZING_TOP_LEFT = 5,
++  WINDOW_RESIZING_BOTTOM_LEFT = 6,
++  WINDOW_RESIZING_RIGHT = 8,
++  WINDOW_RESIZING_TOP_RIGHT = 9,
++  WINDOW_RESIZING_BOTTOM_RIGHT = 10,
++  WINDOW_RESIZING_MASK = 15,
++  WINDOW_EXTERIOR = 16,
++  WINDOW_TITLEBAR = 17,
++  WINDOW_CLIENT_AREA = 18,
++};
++
++// This class represents an input device that was registered with Wayland.
++// The purpose of this class is to parse and wrap events into generic
++// WaylandEvent types and dispatch the event to the appropriate WaylandWindow.
++//
++// How Wayland events work:
++// ------------------------
++//
++// When the On*Focus events are triggered, the input device receives a
++// reference to the surface that just received/lost focus. Each surface is
++// associated with a unique WaylandWindow. When processing the focus events we
++// keep track of the currently focused window such that when we receive
++// different events (mouse button press or key press) we only send the event to
++// the window in focus.
++class WaylandInputDevice {
++ public:
++  WaylandInputDevice(WaylandDisplay* display, uint32_t id);
++  ~WaylandInputDevice();
++
++  // Returns a bitmask of the kBoundsChange_ values.
++  static BoundsChangeType GetBoundsChangeForWindowComponent(int component);
++  static WindowLocation GetLocationForWindowComponent(int component);
++  static int GetPointerImageForWindowComponent(int component);
++
++  void SetCurrentPointerImage(int pointer) { current_pointer_image_ = pointer; }
++  int GetCurrentPointerImage() { return current_pointer_image_; }
++
++  wl_seat* GetInputSeat() { return input_seat_; }
++  wl_pointer* GetPointer() { return input_pointer_; }
++
++ private:
++  // Input device callback functions. These will create 'WaylandEvent's and
++  // send them to the currently focused window.
++  // Args:
++  //  - data: Pointer to the WaylandInputDevice object associated with the
++  //          'input_device'
++  //  - input_device:
++  //          The input device that sent the event
++  //  - time: The time of the event.
++  static void OnMotionNotify(void* data,
++      wl_pointer* input_pointer,
++      uint32_t time,
++      wl_fixed_t sx_w,
++      wl_fixed_t sy_w);
++
++  static void OnButtonNotify(void* data,
++      wl_pointer* input_pointer,
++      uint32_t serial,
++      uint32_t time,
++      uint32_t button,
++      uint32_t state);
++
++  static void OnKeyNotify(void* data,
++      wl_keyboard* input_keyboard,
++      uint32_t serial,
++      uint32_t time,
++      uint32_t key,
++      uint32_t state);
++
++  static void OnAxisNotify(void* data,
++      wl_pointer* input_pointer,
++      uint32_t time,
++      uint32_t axis,
++      int32_t value);
++
++  // On*Focus events also have a Wayland surface associated with them. If the
++  // surface is NULL, then the event signifies a loss of focus. Otherwise we
++  // use the surface to get the WaylandWindow that receives focus.
++  static void OnPointerEnter(void* data,
++      wl_pointer* input_pointer,
++      uint32_t serial,
++      wl_surface* surface,
++      wl_fixed_t sx_w,
++      wl_fixed_t sy_w);
++  static void OnPointerLeave(void* data,
++      wl_pointer* input_pointer,
++      uint32_t serial,
++      wl_surface* surface);
++  static void OnKeyboardKeymap(void *data,
++      struct wl_keyboard *keyboard,
++      uint32_t format, int fd, uint32_t size);
++  static void OnKeyboardEnter(void* data,
++      wl_keyboard* input_keyboard,
++      uint32_t serial,
++      wl_surface* surface,
++      wl_array* keys);
++  static void OnKeyboardLeave(void* data,
++      wl_keyboard* input_keyboard,
++      uint32_t serial,
++      wl_surface* surface);
++  static void OnKeyModifiers(void *data, wl_keyboard *keyboard,
++      uint32_t serial, uint32_t mods_depressed,
++      uint32_t mods_latched, uint32_t mods_locked,
++      uint32_t group);
++
++  static void OnSeatCapabilities(void *data,
++      wl_seat *seat,
++      uint32_t caps);
++
++  wl_seat* input_seat_;
++  wl_pointer* input_pointer_;
++  wl_keyboard* input_keyboard_;
++  wl_display* display_;
++  wl_registry* registry_;
++
++  // These keep track of the window that's currently under focus. NULL if no
++  // window is under focus.
++  WaylandWindow* pointer_focus_;
++  WaylandWindow* keyboard_focus_;
++
++  // Keeps track of the currently active keyboard modifiers. We keep this
++  // since we want to advertise keyboard modifiers with mouse events.
++  uint32_t keyboard_modifiers_;
++
++  // Keeps track of the last position for the motion event. We want to
++  // publish this with events such as button notify which doesn't have a
++  // position associated by default.
++  gfx::Point global_position_;
++  gfx::Point surface_position_;
++
++  // Keep track of the time of last event. Useful when we get buffer Attach
++  // calls and the calls wouldn't have a way of getting an event time.
++  uint32_t pointer_enter_serial_;
++
++  // keymap used to transform keyboard events.
++  struct xkb {
++    struct xkb_rule_names names;
++    struct xkb_keymap *keymap;
++    struct xkb_state *state;
++    struct xkb_context *context;
++    xkb_mod_mask_t control_mask;
++    xkb_mod_mask_t alt_mask;
++    xkb_mod_mask_t shift_mask;
++  };
++
++  xkb xkb_;
++
++  void InitXKB();
++  void FiniXKB();
++
++  int current_pointer_image_;
++
++  DISALLOW_COPY_AND_ASSIGN(WaylandInputDevice);
++};
++
++}  // namespace ui
++
++#endif  // UI_WAYLAND_WAYLAND_INPUT_DEVICE_H_
+diff --git a/ui/wayland/wayland_input_method_event_filter.cc b/ui/wayland/wayland_input_method_event_filter.cc
+new file mode 100644
+index 0000000..af7fce1
+--- /dev/null
++++ b/ui/wayland/wayland_input_method_event_filter.cc
+@@ -0,0 +1,41 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/wayland/wayland_input_method_event_filter.h"
++
++#include "ui/base/ime/input_method.h"
++#include "ui/base/ime/input_method_factory.h"
++
++namespace ui {
++
++////////////////////////////////////////////////////////////////////////////////
++// InputMethodEventFilter, public:
++
++WaylandInputMethodEventFilter::WaylandInputMethodEventFilter()
++    : input_method_(ui::CreateInputMethod(this, NULL)) {
++  // TODO(yusukes): Check if the root window is currently focused and pass the
++  // result to Init().
++  input_method_->Init(true);
++}
++
++WaylandInputMethodEventFilter::~WaylandInputMethodEventFilter()
++{
++}
++
++////////////////////////////////////////////////////////////////////////////////
++// InputMethodEventFilter, ui::InputMethodDelegate implementation:
++
++bool WaylandInputMethodEventFilter::DispatchKeyEventPostIME(
++    const base::NativeEvent& event)
++{
++}
++
++bool WaylandInputMethodEventFilter::DispatchFabricatedKeyEventPostIME(
++    ui::EventType type,
++    ui::KeyboardCode key_code,
++    int flags)
++{
++}
++
++}  // namespace ui
+diff --git a/ui/wayland/wayland_input_method_event_filter.h b/ui/wayland/wayland_input_method_event_filter.h
+new file mode 100644
+index 0000000..65b1e3d
+--- /dev/null
++++ b/ui/wayland/wayland_input_method_event_filter.h
+@@ -0,0 +1,40 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef UI_WAYLAND_WAYLAND_INPUT_METHOD_EVENT_FILTER_
++#define UI_WAYLAND_WAYLAND_INPUT_METHOD_EVENT_FILTER_
++
++#include "base/basictypes.h"
++#include "base/compiler_specific.h"
++#include "base/memory/scoped_ptr.h"
++#include "ui/base/ime/input_method_delegate.h"
++
++namespace ui {
++class InputMethod;
++
++// An event filter that forwards a KeyEvent to a system IME, and dispatches a
++// TranslatedKeyEvent to the root window as needed.
++class WaylandInputMethodEventFilter
++    : public ui::internal::InputMethodDelegate {
++ public:
++  WaylandInputMethodEventFilter();
++  virtual ~WaylandInputMethodEventFilter();
++
++  InputMethod* GetInputMethod() const { return input_method_.get(); }
++
++ private:
++  // Overridden from ui::internal::InputMethodDelegate.
++  virtual bool DispatchKeyEventPostIME(const base::NativeEvent& event) OVERRIDE;
++  virtual bool DispatchFabricatedKeyEventPostIME(ui::EventType type,
++                                                 ui::KeyboardCode key_code,
++                                                 int flags) OVERRIDE;
++
++  scoped_ptr<ui::InputMethod> input_method_;
++
++  DISALLOW_COPY_AND_ASSIGN(WaylandInputMethodEventFilter);
++};
++
++}  // namespace ui
++
++#endif  // UI_WAYLAND_WAYLAND_INPUT_METHOD_EVENT_FILTER_
+diff --git a/ui/wayland/wayland_screen.cc b/ui/wayland/wayland_screen.cc
+new file mode 100644
+index 0000000..3148ba86
+--- /dev/null
++++ b/ui/wayland/wayland_screen.cc
+@@ -0,0 +1,78 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/wayland/wayland_screen.h"
++
++#include <wayland-client.h>
++
++#include "ui/wayland/wayland_display.h"
++
++namespace ui {
++
++WaylandScreen::WaylandScreen(WaylandDisplay* display, uint32_t id)
++    : output_(NULL),
++      display_(display)
++{
++  static const wl_output_listener kOutputListener = {
++    WaylandScreen::OutputHandleGeometry,
++    WaylandScreen::OutputHandleMode,
++  };
++
++  output_ = static_cast<wl_output*>(
++      wl_registry_bind(display_->registry(), id, &wl_output_interface, 1));
++  wl_output_add_listener(output_, &kOutputListener, this);
++}
++
++WaylandScreen::~WaylandScreen()
++{
++  if (output_)
++    wl_output_destroy(output_);
++}
++
++gfx::Rect WaylandScreen::GetAllocation() const
++{
++  gfx::Rect allocation;
++  allocation.set_origin(position_);
++
++  // Find the active mode and pass its dimensions.
++  for (Modes::const_iterator i = modes_.begin(); i != modes_.end(); ++i) {
++    if ((*i).flags & WL_OUTPUT_MODE_CURRENT) {
++      allocation.set_width((*i).width);
++      allocation.set_height((*i).height);
++      break;
++    }
++  }
++
++  return allocation;
++}
++
++// static
++void WaylandScreen::OutputHandleGeometry(void *data,
++    wl_output *output, int32_t x, int32_t y,
++    int32_t physical_width, int32_t physical_height,
++    int32_t subpixel, const char* make,
++    const char* model, int32_t output_transform)
++{
++  WaylandScreen* screen = static_cast<WaylandScreen*>(data);
++  screen->position_.SetPoint(x, y);
++}
++
++// static
++void WaylandScreen::OutputHandleMode(void* data,
++    wl_output* wl_output, uint32_t flags,
++    int32_t width, int32_t height,
++    int32_t refresh)
++{
++  WaylandScreen* screen = static_cast<WaylandScreen*>(data);
++
++  Mode mode;
++  mode.width = width;
++  mode.height = height;
++  mode.refresh = refresh;
++  mode.flags = flags;
++
++  screen->modes_.push_back(mode);
++}
++
++}  // namespace ui
+diff --git a/ui/wayland/wayland_screen.h b/ui/wayland/wayland_screen.h
+new file mode 100644
+index 0000000..d2d4d06
+--- /dev/null
++++ b/ui/wayland/wayland_screen.h
+@@ -0,0 +1,73 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef UI_WAYLAND_WAYLAND_SCREEN_H_
++#define UI_WAYLAND_WAYLAND_SCREEN_H_
++
++#include <stdint.h>
++
++#include <list>
++
++#include "base/basictypes.h"
++#include "ui/gfx/point.h"
++#include "ui/gfx/rect.h"
++
++struct wl_output;
++
++namespace ui {
++
++class WaylandDisplay;
++
++// WaylandScreen objects keep track of the current outputs (screens/monitors)
++// that are available to the application.
++class WaylandScreen {
++ public:
++  WaylandScreen(WaylandDisplay* display, uint32_t id);
++  ~WaylandScreen();
++
++  // Returns the active allocation of the screen.
++  gfx::Rect GetAllocation() const;
++
++ private:
++  // Used to store information regarding the available modes for the current
++  // screen.
++  // - (width, height): is the resolution of the screen
++  // - refresh: is the refresh rate of the screen under this mode
++  // - flags: contains extra information regarding the mode. The most important
++  //          is the active mode flag.
++  struct Mode {
++    int32_t width, height, refresh, flags;
++  };
++  typedef std::list<Mode> Modes;
++
++  // Callback functions that allows the display to initialize the screen's
++  // position and available modes.
++  static void OutputHandleGeometry(void* data,
++      wl_output* output, int32_t x, int32_t y,
++      int32_t physical_width, int32_t physical_height,
++      int32_t subpixel, const char* make,
++      const char* model, int32_t output_transform);
++
++  static void OutputHandleMode(void* data,
++      wl_output* wl_output, uint32_t flags,
++      int32_t width, int32_t height,
++      int32_t refresh);
++
++  // The Wayland output this object wraps
++  wl_output* output_;
++  // The display that the output is associated with
++  WaylandDisplay* display_;
++  // The position of the screen. This is important in multi monitor display
++  // since it provides the position of the screen in the virtual screen.
++  gfx::Point position_;
++
++  // List of supported modes
++  Modes modes_;
++
++  DISALLOW_COPY_AND_ASSIGN(WaylandScreen);
++};
++
++}  // namespace ui
++
++#endif  // UI_WAYLAND_WAYLAND_SCREEN_H_
+diff --git a/ui/wayland/wayland_task.cc b/ui/wayland/wayland_task.cc
+new file mode 100644
+index 0000000..ccbf062
+--- /dev/null
++++ b/ui/wayland/wayland_task.cc
+@@ -0,0 +1,51 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/wayland/wayland_task.h"
++
++#include <wayland-client.h>
++
++#include "ui/wayland/wayland_display.h"
++#include "ui/wayland/wayland_window.h"
++
++namespace ui {
++
++////////////////// WaylandTask Implementation ////////////////////////////
++WaylandTask::WaylandTask(WaylandWindow *window) : window_(window)
++{
++}
++
++WaylandTask::~WaylandTask()
++{
++}
++
++////////////////// WaylandResizeTask Implementation ////////////////////////////
++WaylandResizeTask::WaylandResizeTask(WaylandWindow *window) : WaylandTask(window)
++{
++}
++
++WaylandResizeTask::~WaylandResizeTask()
++{
++}
++
++void WaylandResizeTask::Run()
++{
++  window_->OnResize();
++}
++
++////////////////// WaylandRedrawTask Implementation ////////////////////////////
++WaylandRedrawTask::WaylandRedrawTask(WaylandWindow *window) : WaylandTask(window)
++{
++}
++
++WaylandRedrawTask::~WaylandRedrawTask()
++{
++}
++
++void WaylandRedrawTask::Run()
++{
++  window_->OnRedraw();
++}
++
++}  // namespace ui
+diff --git a/ui/wayland/wayland_task.h b/ui/wayland/wayland_task.h
+new file mode 100644
+index 0000000..41fa8f0
+--- /dev/null
++++ b/ui/wayland/wayland_task.h
+@@ -0,0 +1,64 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef UI_WAYLAND_WAYLAND_TASK_H_
++#define UI_WAYLAND_WAYLAND_TASK_H_
++
++#include <stdint.h>
++
++#include <list>
++
++#include "base/basictypes.h"
++#include "ui/gfx/point.h"
++#include "ui/gfx/rect.h"
++
++struct wl_compositor;
++struct wl_display;
++struct wl_shell;
++struct wl_shm;
++struct wl_surface;
++struct wl_shell_surface;
++
++namespace ui {
++
++class WaylandDisplay;
++class WaylandWindow;
++
++class WaylandTask {
++ public:
++  WaylandTask(WaylandWindow* window);
++  virtual ~WaylandTask();
++  virtual void Run() = 0;
++  WaylandWindow* GetWindow() { return window_; }
++
++ protected:
++  WaylandWindow *window_;
++
++ private:
++  DISALLOW_COPY_AND_ASSIGN(WaylandTask);
++};
++
++class WaylandResizeTask : public WaylandTask {
++ public:
++  WaylandResizeTask(WaylandWindow* window);
++  virtual ~WaylandResizeTask();
++  virtual void Run();
++
++ private:
++  DISALLOW_COPY_AND_ASSIGN(WaylandResizeTask);
++};
++
++class WaylandRedrawTask : public WaylandTask {
++ public:
++  WaylandRedrawTask(WaylandWindow* window);
++  virtual ~WaylandRedrawTask();
++  virtual void Run();
++
++ private:
++  DISALLOW_COPY_AND_ASSIGN(WaylandRedrawTask);
++};
++
++}  // namespace ui
++
++#endif  // UI_WAYLAND_WAYLAND_TASK_H_
+diff --git a/ui/wayland/wayland_widget.h b/ui/wayland/wayland_widget.h
+new file mode 100644
+index 0000000..0691d4b
+--- /dev/null
++++ b/ui/wayland/wayland_widget.h
+@@ -0,0 +1,32 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef UI_WAYLAND_WAYLAND_WIDGET_H_
++#define UI_WAYLAND_WAYLAND_WIDGET_H_
++
++namespace base {
++namespace wayland {
++union WaylandEvent;
++}
++}
++
++namespace ui {
++
++// WaylandWidget is an interface for processing Wayland events.
++class WaylandWidget {
++ public:
++  virtual ~WaylandWidget() {}
++
++  virtual void OnMotionNotify(base::wayland::WaylandEvent event) = 0;
++  virtual void OnButtonNotify(base::wayland::WaylandEvent event) = 0;
++  virtual void OnKeyNotify(base::wayland::WaylandEvent event) = 0;
++  virtual void OnPointerFocus(base::wayland::WaylandEvent event) = 0;
++  virtual void OnKeyboardFocus(base::wayland::WaylandEvent event) = 0;
++
++  virtual void OnGeometryChange(base::wayland::WaylandEvent event) = 0;
++};
++
++}  // namespace ui
++
++#endif  // UI_WAYLAND_WAYLAND_WIDGET_H_
+diff --git a/ui/wayland/wayland_window.cc b/ui/wayland/wayland_window.cc
+new file mode 100644
+index 0000000..e2d02b5
+--- /dev/null
++++ b/ui/wayland/wayland_window.cc
+@@ -0,0 +1,278 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/wayland/wayland_window.h"
++
++#include <wayland-egl.h>
++
++#include "base/logging.h"
++#include "base/wayland/wayland_event.h"
++#include "ui/wayland/wayland_display.h"
++#include "ui/wayland/wayland_delegate.h"
++#include "ui/wayland/wayland_task.h"
++#include "ui/wayland/wayland_input_device.h"
++#include "ui/gl/gl_surface.h"
++
++#include <GL/gl.h>
++#include <EGL/egl.h>
++#include <EGL/eglext.h>
++
++#include <algorithm>
++
++using base::wayland::WaylandEvent;
++
++namespace ui {
++
++WaylandWindow::WaylandWindow(WaylandDelegate* delegate, WaylandDisplay* display)
++    : delegate_(delegate),
++    display_(display),
++    parent_window_(NULL),
++    user_data_(NULL),
++    relative_position_(),
++    surface_(display->CreateSurface()),
++    shell_surface_(NULL),
++    fullscreen_(false),
++    window_(NULL),
++    resize_scheduled_(false),
++    redraw_scheduled_(false),
++    transparent_(false),
++    buffer_type_(WINDOW_BUFFER_TYPE_SHM),
++    type_(TYPE_TOPLEVEL),
++    resize_edges_(0),
++    allocation_(gfx::Rect(0, 0, 0, 0)),
++    server_allocation_(gfx::Rect(0, 0, 0, 0)),
++    saved_allocation_(gfx::Rect(0, 0, 0, 0)),
++    pending_allocation_(gfx::Rect(0, 0, 0, 0))
++{
++  if(display_->shell())
++  {
++    shell_surface_ = wl_shell_get_shell_surface(display_->shell(), surface_);
++  }
++
++  wl_surface_set_user_data(surface_, this);
++
++  if(shell_surface_)
++  {
++    wl_shell_surface_set_user_data(shell_surface_, this);
++
++    static const wl_shell_surface_listener shell_surface_listener = {
++      WaylandWindow::HandlePing,
++      WaylandWindow::HandleConfigure,
++      WaylandWindow::HandlePopupDone
++    };
++
++    wl_shell_surface_add_listener(shell_surface_,
++        &shell_surface_listener, this);
++  }
++
++  allocation_.SetRect(0, 0, 0, 0);
++  saved_allocation_ = allocation_;
++  transparent_ = 1;
++
++  // TODO: make buffer type choosable for testing and etc
++  buffer_type_ = WINDOW_BUFFER_TYPE_EGL_WINDOW;
++
++  //	wl_shell_surface_set_toplevel(shell_surface_);
++  display->AddWindow(this);
++}
++
++void WaylandWindow::SetType()
++{
++  if (!shell_surface_)
++    return;
++
++  switch (type_) {
++    case TYPE_FULLSCREEN:
++      wl_shell_surface_set_fullscreen(shell_surface_,
++          WL_SHELL_SURFACE_FULLSCREEN_METHOD_DEFAULT, 0, NULL);
++      break;
++    case TYPE_TOPLEVEL:
++      wl_shell_surface_set_toplevel(shell_surface_);
++      break;
++    case TYPE_TRANSIENT:
++      wl_shell_surface_set_transient(shell_surface_,
++          parent_window_->surface_,
++          relative_position_.x(), relative_position_.y(), 0);
++      break;
++    case TYPE_MENU:
++      break;
++    case TYPE_CUSTOM:
++      break;
++  }
++}
++
++void WaylandWindow::GetResizeDelta(int &x, int &y)
++{
++  if (resize_edges_ & WINDOW_RESIZING_LEFT)
++    x = server_allocation_.width() - allocation_.width();
++  else
++    x = 0;
++
++  if (resize_edges_ & WINDOW_RESIZING_TOP)
++    y = server_allocation_.height() - allocation_.height();
++  else
++    y = 0;
++
++  resize_edges_ = 0;
++}
++
++void WaylandWindow::AddChild(WaylandWindow* child)
++{
++  DCHECK(std::find(children_.begin(), children_.end(), child) ==
++      children_.end());
++  if (child->GetParentWindow())
++    child->GetParentWindow()->RemoveChild(child);
++  child->parent_window_ = this;
++  children_.push_back(child);
++}
++
++void WaylandWindow::RemoveChild(WaylandWindow* child)
++{
++  Windows::iterator i = std::find(children_.begin(), children_.end(), child);
++  DCHECK(i != children_.end());
++  child->parent_window_ = NULL;
++  children_.erase(i);
++}
++
++void WaylandWindow::SetParentWindow(WaylandWindow* parent_window)
++{
++  if (fullscreen_) {
++    type_ = TYPE_FULLSCREEN;
++  } else if (!parent_window) {
++    type_ = TYPE_TOPLEVEL;
++  } else {
++    type_ = TYPE_TRANSIENT;
++  }
++
++  if(parent_window)
++    parent_window->AddChild(this);
++}
++
++gfx::Rect WaylandWindow::GetBounds() const
++{
++  gfx::Rect rect = resize_scheduled_ ? pending_allocation_ : allocation_;
++
++  if(type_ == TYPE_TRANSIENT && parent_window_)
++    rect.set_origin(relative_position_);
++
++  return rect;
++}
++
++void WaylandWindow::SetBounds(const gfx::Rect& new_bounds)
++{
++  if(type_ == TYPE_TRANSIENT && parent_window_ &&
++      new_bounds.origin() != relative_position_)
++  {
++    relative_position_ = new_bounds.origin();
++  }
++
++  ScheduleResize(new_bounds.width(), new_bounds.height());
++}
++
++void WaylandWindow::Show()
++{
++  NOTIMPLEMENTED();
++}
++
++void WaylandWindow::Hide()
++{
++  NOTIMPLEMENTED();
++}
++
++WaylandWindow::~WaylandWindow() {
++  if(window_)
++    wl_egl_window_destroy(window_);
++
++  if (surface_)
++  {
++    wl_surface_destroy(surface_);
++    surface_ = NULL;
++  }
++
++  display_->RemoveWindow(this);
++}
++
++bool WaylandWindow::IsVisible() const {
++  return surface_ != NULL;
++}
++
++void WaylandWindow::Flush()
++{
++  // TODO: gotta find a better way to not set the type every time it flushes
++  if (display_->shell())
++    SetType();
++}
++
++void WaylandWindow::ScheduleResize(int32_t width, int32_t height)
++{
++  if(!window_)
++    window_ = wl_egl_window_create(surface_,
++        width, height);
++
++  pending_allocation_ = gfx::Rect(0, 0, width, height);
++
++  if(IsVisible() && !resize_scheduled_ && pending_allocation_ != allocation_)
++  {
++    WaylandResizeTask *task = new WaylandResizeTask(this);
++    display_->AddTask(task);
++
++    //		delegate_->OnBoundsChanged(allocation_, pending_allocation_);
++    resize_scheduled_ = true;
++  }
++  ScheduleRedraw();
++}
++
++void WaylandWindow::ScheduleRedraw()
++{
++  if(IsVisible() && !redraw_scheduled_)
++  {
++    WaylandRedrawTask *task = new WaylandRedrawTask(this);
++    display_->AddTask(task);
++    redraw_scheduled_ = true;
++  }
++}
++
++void WaylandWindow::SchedulePaintInRect(const gfx::Rect& rect)
++{
++  ScheduleRedraw();
++}
++
++void WaylandWindow::HandleConfigure(void *data, struct wl_shell_surface *shell_surface,
++    uint32_t edges, int32_t width, int32_t height)
++{
++  WaylandWindow *window = static_cast<WaylandWindow*>(data);
++
++  if (width <= 0 || height <= 0)
++    return;
++
++  window->resize_edges_ = edges;
++  window->ScheduleResize(width, height);
++}
++
++void WaylandWindow::HandlePopupDone(void *data, struct wl_shell_surface *shell_surface)
++{
++}
++
++void WaylandWindow::HandlePing(void *data, struct wl_shell_surface *shell_surface, uint32_t serial)
++{
++  wl_shell_surface_pong(shell_surface, serial);
++}
++
++void WaylandWindow::OnResize()
++{
++  resize_scheduled_ = false;
++  if(pending_allocation_ != allocation_)
++  {
++    allocation_ = pending_allocation_;
++    ScheduleRedraw();
++  }
++}
++
++void WaylandWindow::OnRedraw()
++{
++  Flush();
++  redraw_scheduled_ = false;
++}
++
++}  // namespace ui
+diff --git a/ui/wayland/wayland_window.h b/ui/wayland/wayland_window.h
+new file mode 100644
+index 0000000..1afef7d
+--- /dev/null
++++ b/ui/wayland/wayland_window.h
+@@ -0,0 +1,167 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef UI_WAYLAND_WAYLAND_WINDOW_H_
++#define UI_WAYLAND_WAYLAND_WINDOW_H_
++
++#include <stdint.h>
++
++#include "base/basictypes.h"
++#include "ui/gfx/point.h"
++#include "ui/gfx/rect.h"
++#include "ui/wayland/wayland_display.h"
++#include <vector>
++
++struct wl_surface;
++struct wl_shell_surface;
++struct wl_egl_window;
++
++namespace ui {
++
++class WaylandDisplay;
++class WaylandDelegate;
++
++// WaylandWindow wraps a wl_surface and some basic operations for the surface.
++// WaylandWindow also keeps track of the WaylandDelegate that will process all
++// events related to the window.
++class WaylandWindow {
++ public:
++  typedef std::vector<WaylandWindow*> Windows;
++
++  // Creates a toplevel window.
++  WaylandWindow(WaylandDelegate* delegate, WaylandDisplay* display);
++
++  ~WaylandWindow();
++
++  bool IsVisible() const;
++
++  // Sets the window to fullscreen if |fullscreen| is true. Otherwise it sets
++  // it as a normal window.
++  void set_fullscreen(bool fullscreen) { fullscreen_ = fullscreen; }
++  bool fullscreen() const { return fullscreen_; }
++
++  void SetUserData(void *user_data) { user_data_ = user_data; }
++  void* GetUserData() const { return user_data_; }
++
++  // Returns a pointer to the parent window. NULL is this window doesn't have
++  // a parent.
++  WaylandWindow* GetToplevelWindow() { return this; }
++  WaylandWindow* GetParentWindow() const { return parent_window_; }
++  void SetParentWindow(WaylandWindow* parent_window);
++
++  WaylandDelegate* delegate() const { return delegate_; }
++
++  // Returns the pointer to the surface associated with the window.
++  // The WaylandWindow object owns the pointer.
++  wl_surface* surface() const { return surface_; }
++  wl_shell_surface* shell_surface() const { return shell_surface_; }
++  void set_egl_window(wl_egl_window* egl_window) { window_ = egl_window; }
++  wl_egl_window* egl_window() const { return window_; }
++
++  void SetBounds(const gfx::Rect& new_bounds);
++  gfx::Rect GetBounds() const;
++  void Flush();
++  void GetResizeDelta(int &x, int &y);
++
++  void ScheduleResize(int32_t width, int32_t height);
++  void SchedulePaintInRect(const gfx::Rect& rect);
++  void ScheduleRedraw();
++
++  virtual void OnResize();
++  virtual void OnRedraw();
++
++  const Windows& GetChildren() const { return children_; }
++  void AddChild(WaylandWindow* child);
++  void RemoveChild(WaylandWindow* child);
++
++  void Show();
++  void Hide();
++  void SetType();
++
++  static void HandleConfigure(void *data, struct wl_shell_surface *shell_surface,
++      uint32_t edges, int32_t width, int32_t height);
++  static void HandlePopupDone(void *data, struct wl_shell_surface *shell_surface);
++  static void HandlePing(void *data, struct wl_shell_surface *shell_surface, uint32_t serial);
++
++ private:
++  static void FreeSurface(void *data, wl_callback *callback, uint32_t time);
++
++  enum WindowBufferType {
++    WINDOW_BUFFER_TYPE_EGL_WINDOW,
++    WINDOW_BUFFER_TYPE_EGL_IMAGE,
++    WINDOW_BUFFER_TYPE_SHM,
++  };
++
++  enum WindowType{
++    TYPE_TOPLEVEL,
++    TYPE_FULLSCREEN,
++    TYPE_TRANSIENT,
++    TYPE_MENU,
++    TYPE_CUSTOM
++  };
++
++  enum WindowLocation {
++    WINDOW_INTERIOR = 0,
++    WINDOW_RESIZING_TOP = 1,
++    WINDOW_RESIZING_BOTTOM = 2,
++    WINDOW_RESIZING_LEFT = 4,
++    WINDOW_RESIZING_TOP_LEFT = 5,
++    WINDOW_RESIZING_BOTTOM_LEFT = 6,
++    WINDOW_RESIZING_RIGHT = 8,
++    WINDOW_RESIZING_TOP_RIGHT = 9,
++    WINDOW_RESIZING_BOTTOM_RIGHT = 10,
++    WINDOW_RESIZING_MASK = 15,
++    WINDOW_EXTERIOR = 16,
++    WINDOW_TITLEBAR = 17,
++    WINDOW_CLIENT_AREA = 18,
++  };
++
++  // The delegate that will process events for this window. This is not owned
++  // by the window.
++  WaylandDelegate* delegate_;
++
++  // Pointer to the display this window is using. This doesn't own the pointer
++  // to the display.
++  WaylandDisplay* display_;
++
++  // When creating a transient window, |parent_window_| is set to point to the
++  // parent of this window. We will then use |parent_window_| to align this
++  // window at the specified offset in |relative_position_|.
++  // |parent_window_| is not owned by this window.
++  WaylandWindow* parent_window_;
++
++  // Position relative to parent window. This is only used by
++  // a transient window.
++  gfx::Point relative_position_;
++
++  // The native wayland surface associated with this window.
++  wl_surface* surface_;
++  wl_shell_surface* shell_surface_;
++
++  // Whether the window is in fullscreen mode.
++  bool fullscreen_;
++
++  int resize_edges_;
++  gfx::Rect allocation_;
++  gfx::Rect saved_allocation_;
++  gfx::Rect server_allocation_;
++  gfx::Rect pending_allocation_;
++  bool transparent_;
++  WindowBufferType buffer_type_;
++  WindowType type_;
++  bool resize_scheduled_;
++  bool redraw_scheduled_;
++  wl_egl_window *window_;
++
++  // Child windows. Topmost is last.
++  Windows children_;
++
++  void *user_data_;
++
++  DISALLOW_COPY_AND_ASSIGN(WaylandWindow);
++};
++
++}  // namespace ui
++
++#endif  // UI_WAYLAND_WAYLAND_WINDOW_H_
+-- 
+1.7.9.5
+

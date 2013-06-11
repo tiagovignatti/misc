@@ -1,0 +1,972 @@
+From 40b728eb630f2d70ca022a8abfb75359b11ef1e7 Mon Sep 17 00:00:00 2001
+From: Tiago Vignatti <tiago.vignatti@intel.com>
+Date: Mon, 6 May 2013 18:15:08 -0300
+Subject: [PATCH 17/19] ui/views: Add desktop root window host Wayland
+ implementation
+
+Signed-off-by: Tiago Vignatti <tiago.vignatti@intel.com>
+---
+ ui/views/views.gyp                                 |    2 +
+ .../desktop_root_window_host_wayland.cc            |  709 ++++++++++++++++++++
+ .../desktop_root_window_host_wayland.h             |  220 ++++++
+ 3 files changed, 931 insertions(+)
+ create mode 100644 ui/views/widget/desktop_aura/desktop_root_window_host_wayland.cc
+ create mode 100644 ui/views/widget/desktop_aura/desktop_root_window_host_wayland.h
+
+diff --git a/ui/views/views.gyp b/ui/views/views.gyp
+index 73947ed..a51254a 100644
+--- a/ui/views/views.gyp
++++ b/ui/views/views.gyp
+@@ -372,6 +372,8 @@
+         'widget/desktop_aura/desktop_native_widget_aura.cc',
+         'widget/desktop_aura/desktop_native_widget_aura.h',
+         'widget/desktop_aura/desktop_root_window_host.h',
++        'widget/desktop_aura/desktop_root_window_host_wayland.cc',
++        'widget/desktop_aura/desktop_root_window_host_wayland.h',
+         'widget/desktop_aura/desktop_root_window_host_win.cc',
+         'widget/desktop_aura/desktop_root_window_host_win.h',
+         'widget/desktop_aura/desktop_root_window_host_x11.cc',
+diff --git a/ui/views/widget/desktop_aura/desktop_root_window_host_wayland.cc b/ui/views/widget/desktop_aura/desktop_root_window_host_wayland.cc
+new file mode 100644
+index 0000000..74fed95
+--- /dev/null
++++ b/ui/views/widget/desktop_aura/desktop_root_window_host_wayland.cc
+@@ -0,0 +1,709 @@
++// Copyright (c) 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/views/widget/desktop_aura/desktop_root_window_host_wayland.h"
++
++#include "base/bind.h"
++#include "base/message_loop/message_pump_wayland.h"
++#include "base/stringprintf.h"
++#include "base/wayland/wayland_event.h"
++#include "ui/aura/client/screen_position_client.h"
++#include "ui/aura/client/user_action_client.h"
++#include "ui/aura/focus_manager.h"
++#include "ui/aura/root_window.h"
++#include "ui/aura/window_property.h"
++#include "ui/base/events/event_utils.h"
++#include "ui/gfx/insets.h"
++#include "ui/linux_ui/linux_ui.h"
++#include "ui/native_theme/native_theme.h"
++#include "ui/views/corewm/compound_event_filter.h"
++#include "ui/views/corewm/corewm_switches.h"
++#include "ui/views/corewm/cursor_manager.h"
++#include "ui/views/corewm/focus_controller.h"
++#include "ui/views/ime/input_method.h"
++#include "ui/views/widget/desktop_aura/desktop_activation_client.h"
++#include "ui/views/widget/desktop_aura/desktop_capture_client.h"
++#include "ui/views/widget/desktop_aura/desktop_cursor_loader_updater_aurax11.h"
++#include "ui/views/widget/desktop_aura/desktop_dispatcher_client.h"
++#include "ui/views/widget/desktop_aura/desktop_drag_drop_client_aurax11.h"
++#include "ui/views/widget/desktop_aura/desktop_focus_rules.h"
++#include "ui/views/widget/desktop_aura/desktop_layout_manager.h"
++#include "ui/views/widget/desktop_aura/desktop_native_cursor_manager.h"
++#include "ui/views/widget/desktop_aura/desktop_native_widget_aura.h"
++#include "ui/views/widget/desktop_aura/desktop_screen_position_client.h"
++#include "ui/wayland/wayland_screen.h"
++#include "ui/wayland/wayland_window.h"
++
++namespace views {
++
++DesktopRootWindowHostWayland* DesktopRootWindowHostWayland::g_current_capture =
++    NULL;
++
++DEFINE_WINDOW_PROPERTY_KEY(
++    aura::Window*, kViewsWindowForRootWindow, NULL);
++
++DEFINE_WINDOW_PROPERTY_KEY(
++    DesktopRootWindowHostWayland*, kHostForRootWindow, NULL);
++
++////////////////////////////////////////////////////////////////////////////////
++// DesktopRootWindowHostWayland, public:
++
++DesktopRootWindowHostWayland::DesktopRootWindowHostWayland(
++    internal::NativeWidgetDelegate* native_widget_delegate,
++    DesktopNativeWidgetAura* desktop_native_widget_aura,
++    const gfx::Rect& bounds)
++    : close_widget_factory_(this),
++      native_widget_delegate_(native_widget_delegate),
++      display_(ui::WaylandDisplay::GetDisplay()),
++      window_mapped_(false),
++      desktop_native_widget_aura_(desktop_native_widget_aura) {
++}
++
++DesktopRootWindowHostWayland::~DesktopRootWindowHostWayland() {
++  root_window_->ClearProperty(kHostForRootWindow);
++  if (corewm::UseFocusControllerOnDesktop()) {
++    aura::client::SetFocusClient(root_window_, NULL);
++    aura::client::SetActivationClient(root_window_, NULL);
++  }
++}
++
++// static
++ui::NativeTheme* DesktopRootWindowHost::GetNativeTheme(aura::Window* window) {
++  const ui::LinuxUI* linux_ui = ui::LinuxUI::instance();
++  if (linux_ui) {
++    ui::NativeTheme* native_theme = linux_ui->GetNativeTheme();
++    if (native_theme)
++      return native_theme;
++  }
++
++  return ui::NativeTheme::instance();
++}
++
++////////////////////////////////////////////////////////////////////////////////
++// DesktopRootWindowHostWayland, private:
++
++void DesktopRootWindowHostWayland::InitWaylandWindow(
++    const Widget::InitParams& params) {
++  window_ = new ui::WaylandWindow(this, display_);
++  window_->SetParentWindow(NULL);
++  window_->SetBounds(params.bounds);
++
++  base::MessagePumpWayland::Current()->AddDispatcherForWindow(this, window_);
++}
++
++
++void DesktopRootWindowHostWayland::HandleNativeWidgetActivationChanged(
++    bool active) {
++  native_widget_delegate_->OnNativeWidgetActivationChanged(active);
++  native_widget_delegate_->AsWidget()->GetRootView()->SchedulePaint();
++}
++
++// TODO(erg): This method should basically be everything I need form
++// RootWindowHostWayland::RootWindowHostWayland().
++aura::RootWindow* DesktopRootWindowHostWayland::InitRootWindow(
++    const Widget::InitParams& params) {
++  bounds_ = params.bounds;
++
++  aura::RootWindow::CreateParams rw_params(bounds_);
++  rw_params.host = this;
++  root_window_ = new aura::RootWindow(rw_params);
++  root_window_->Init();
++  root_window_->AddChild(content_window_);
++  root_window_->SetLayoutManager(new DesktopLayoutManager(root_window_));
++  root_window_->SetProperty(kViewsWindowForRootWindow, content_window_);
++  root_window_->SetProperty(kHostForRootWindow, this);
++  root_window_host_delegate_ = root_window_;
++
++  // If we're given a parent, we need to mark ourselves as transient to another
++  // window. Otherwise activation gets screwy.
++  gfx::NativeView parent = params.parent;
++  if (!params.child && params.parent)
++    parent->AddTransientChild(content_window_);
++
++  native_widget_delegate_->OnNativeWidgetCreated(true);
++
++  capture_client_.reset(new views::DesktopCaptureClient(root_window_));
++  aura::client::SetCaptureClient(root_window_, capture_client_.get());
++
++  // TODO: dispatches activation?
++  //base::MessagePumpWayland::Current()->AddDispatcherForRootWindow(this);
++
++  if (corewm::UseFocusControllerOnDesktop()) {
++    corewm::FocusController* focus_controller =
++        new corewm::FocusController(new DesktopFocusRules);
++    focus_client_.reset(focus_controller);
++    aura::client::SetFocusClient(root_window_, focus_controller);
++    aura::client::SetActivationClient(root_window_, focus_controller);
++    root_window_->AddPreTargetHandler(focus_controller);
++  } else {
++    focus_client_.reset(new aura::FocusManager);
++    aura::client::SetFocusClient(root_window_, focus_client_.get());
++    activation_client_.reset(new DesktopActivationClient(root_window_));
++  }
++
++  dispatcher_client_.reset(new DesktopDispatcherClient);
++  aura::client::SetDispatcherClient(root_window_,
++                                    dispatcher_client_.get());
++
++  // TODO: cursor_client_?
++
++  position_client_.reset(new DesktopScreenPositionClient);
++  aura::client::SetScreenPositionClient(root_window_,
++                                        position_client_.get());
++
++  desktop_native_widget_aura_->InstallInputMethodEventFilter(root_window_);
++
++  // TODO: drag_drop_client?
++
++  focus_client_->FocusWindow(content_window_);
++  return root_window_;
++}
++bool DesktopRootWindowHostWayland::IsWindowManagerPresent() {
++  return true;
++}
++
++////////////////////////////////////////////////////////////////////////////////
++// DesktopRootWindowHostWayland, DesktopRootWindowHost implementation:
++
++aura::RootWindow* DesktopRootWindowHostWayland::Init(
++    aura::Window* content_window,
++    const Widget::InitParams& params) {
++  content_window_ = content_window;
++
++  // TODO(erg): Check whether we *should* be building a RootWindowHost here, or
++  // whether we should be proxying requests to another DRWHL.
++
++  // In some situations, views tries to make a zero sized window, and that
++  // makes us crash. Make sure we have valid sizes.
++  Widget::InitParams sanitized_params = params;
++  if (sanitized_params.bounds.width() == 0)
++    sanitized_params.bounds.set_width(100);
++  if (sanitized_params.bounds.height() == 0)
++    sanitized_params.bounds.set_height(100);
++
++  InitWaylandWindow(sanitized_params);
++  return InitRootWindow(sanitized_params);
++}
++
++void DesktopRootWindowHostWayland::InitFocus(aura::Window* window) {
++}
++
++void DesktopRootWindowHostWayland::Close() {
++  // TODO(erg): Might need to do additional hiding tasks here.
++
++  if (!close_widget_factory_.HasWeakPtrs()) {
++    // And we delay the close so that if we are called from an ATL callback,
++    // we don't destroy the window before the callback returned (as the caller
++    // may delete ourselves on destroy and the ATL callback would still
++    // dereference us when the callback returns).
++    base::MessageLoop::current()->PostTask(
++        FROM_HERE,
++        base::Bind(&DesktopRootWindowHostWayland::CloseNow,
++                   close_widget_factory_.GetWeakPtr()));
++  }
++}
++
++void DesktopRootWindowHostWayland::CloseNow() {
++  native_widget_delegate_->OnNativeWidgetDestroying();
++
++  // Actually free our native resources.
++  base::MessagePumpWayland::Current()->RemoveDispatcherForWindow(window_);
++  delete window_;
++
++  desktop_native_widget_aura_->OnHostClosed();
++}
++
++aura::RootWindowHost* DesktopRootWindowHostWayland::AsRootWindowHost() {
++  return this;
++}
++
++void DesktopRootWindowHostWayland::ShowWindowWithState(
++    ui::WindowShowState show_state) {
++  if (show_state != ui::SHOW_STATE_DEFAULT &&
++      show_state != ui::SHOW_STATE_NORMAL) {
++    // Only forwarding to Show().
++    NOTIMPLEMENTED();
++  }
++
++  Show();
++}
++
++void DesktopRootWindowHostWayland::ShowMaximizedWithBounds(
++    const gfx::Rect& restored_bounds) {
++  // TODO(erg):
++  NOTIMPLEMENTED();
++
++  // TODO(erg): We shouldn't completely fall down here.
++  Show();
++}
++
++bool DesktopRootWindowHostWayland::IsVisible() const {
++  return window_mapped_;
++}
++
++void DesktopRootWindowHostWayland::SetSize(const gfx::Size& size) {
++  // TODO(erg):
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::CenterWindow(const gfx::Size& size) {
++  gfx::Rect parent_bounds = GetWorkAreaBoundsInScreen();
++
++  // If |window_|'s transient parent bounds are big enough to contain |size|,
++  // use them instead.
++  if (content_window_->transient_parent()) {
++    gfx::Rect transient_parent_rect =
++        content_window_->transient_parent()->GetBoundsInScreen();
++    if (transient_parent_rect.height() >= size.height() &&
++        transient_parent_rect.width() >= size.width()) {
++      parent_bounds = transient_parent_rect;
++    }
++  }
++
++  gfx::Rect window_bounds(
++      parent_bounds.x() + (parent_bounds.width() - size.width()) / 2,
++      parent_bounds.y() + (parent_bounds.height() - size.height()) / 2,
++      size.width(),
++      size.height());
++  // Don't size the window bigger than the parent, otherwise the user may not be
++  // able to close or move it.
++  window_bounds.AdjustToFit(parent_bounds);
++
++  SetBounds(window_bounds);
++}
++
++void DesktopRootWindowHostWayland::GetWindowPlacement(
++    gfx::Rect* bounds,
++    ui::WindowShowState* show_state) const {
++  *bounds = bounds_;
++
++  // TODO(erg): This needs a better implementation. For now, we're just pass
++  // back the normal state until we keep track of this.
++  *show_state = ui::SHOW_STATE_NORMAL;
++}
++
++gfx::Rect DesktopRootWindowHostWayland::GetWindowBoundsInScreen() const {
++  return bounds_;
++}
++
++gfx::Rect DesktopRootWindowHostWayland::GetClientAreaBoundsInScreen() const {
++  // TODO(erg): The NativeWidgetAura version returns |bounds_|, claiming its
++  // needed for View::ConvertPointToScreen() to work
++  // correctly. DesktopRootWindowHostWin::GetClientAreaBoundsInScreen() just
++  // asks windows what it thinks the client rect is.
++  //
++  // Attempts to calculate the rect by asking the NonClientFrameView what it
++  // thought its GetBoundsForClientView() were broke combobox drop down
++  // placement.
++  return bounds_;
++}
++
++gfx::Rect DesktopRootWindowHostWayland::GetRestoredBounds() const {
++  // TODO(erg):
++  NOTIMPLEMENTED();
++  return gfx::Rect();
++}
++
++gfx::Rect DesktopRootWindowHostWayland::GetWorkAreaBoundsInScreen() const {
++  NOTIMPLEMENTED();
++  return gfx::Rect(0, 0, 10, 10);
++}
++
++void DesktopRootWindowHostWayland::SetShape(gfx::NativeRegion native_region) {
++  // TODO(erg):
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::Activate() {
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::Deactivate() {
++  NOTIMPLEMENTED();
++}
++
++bool DesktopRootWindowHostWayland::IsActive() const {
++  return false;
++}
++
++void DesktopRootWindowHostWayland::Maximize() {
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::Minimize() {
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::Restore() {
++  NOTIMPLEMENTED();
++}
++
++bool DesktopRootWindowHostWayland::IsMaximized() const {
++  return true;
++}
++
++bool DesktopRootWindowHostWayland::IsMinimized() const {
++  return false;
++}
++
++void DesktopRootWindowHostWayland::OnCaptureReleased() {
++  native_widget_delegate_->OnMouseCaptureLost();
++  g_current_capture = NULL;
++}
++
++void DesktopRootWindowHostWayland::DispatchMouseEvent(ui::MouseEvent* event) {
++  if (!g_current_capture || g_current_capture == this) {
++    root_window_host_delegate_->OnHostMouseEvent(event);
++  } else {
++    // Another DesktopRootWindowHostX11 has installed itself as
++    // capture. Translate the event's location and dispatch to the other.
++    event->ConvertLocationToTarget(root_window_,
++                                   g_current_capture->root_window_);
++    g_current_capture->root_window_host_delegate_->OnHostMouseEvent(event);
++  }
++}
++
++bool DesktopRootWindowHostWayland::HasCapture() const {
++  return g_current_capture == this;
++}
++
++void DesktopRootWindowHostWayland::SetAlwaysOnTop(bool always_on_top) {
++  // TODO(erg):
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::SetWindowTitle(const string16& title) {
++  NOTIMPLEMENTED();
++
++  window_->ScheduleRedraw();
++}
++
++void DesktopRootWindowHostWayland::ClearNativeFocus() {
++  // This method is weird and misnamed. Instead of clearing the native focus,
++  // it sets the focus to our |content_window_|, which will trigger a cascade
++  // of focus changes into views.
++  if (content_window_ && aura::client::GetFocusClient(content_window_) &&
++      content_window_->Contains(
++          aura::client::GetFocusClient(content_window_)->GetFocusedWindow())) {
++    aura::client::GetFocusClient(content_window_)->FocusWindow(content_window_);
++  }
++}
++
++Widget::MoveLoopResult DesktopRootWindowHostWayland::RunMoveLoop(
++    const gfx::Vector2d& drag_offset,
++    Widget::MoveLoopSource source) {
++  NOTIMPLEMENTED();
++  return Widget::MOVE_LOOP_SUCCESSFUL;
++}
++
++void DesktopRootWindowHostWayland::EndMoveLoop() {
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::SetVisibilityChangedAnimationsEnabled(
++    bool value) {
++  // Much like the previous NativeWidgetGtk, we don't have anything to do here.
++}
++
++bool DesktopRootWindowHostWayland::ShouldUseNativeFrame() {
++  return false;
++}
++
++void DesktopRootWindowHostWayland::FrameTypeChanged() {
++}
++
++NonClientFrameView* DesktopRootWindowHostWayland::CreateNonClientFrameView() {
++  return NULL;
++}
++
++void DesktopRootWindowHostWayland::SetFullscreen(bool fullscreen) {
++  NOTIMPLEMENTED();
++}
++
++bool DesktopRootWindowHostWayland::IsFullscreen() const {
++  NOTIMPLEMENTED();
++  return false;
++}
++
++void DesktopRootWindowHostWayland::SetOpacity(unsigned char opacity) {
++  // TODO(erg):
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::SetWindowIcons(
++    const gfx::ImageSkia& window_icon, const gfx::ImageSkia& app_icon) {
++  // TODO(erg):
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::InitModalType(ui::ModalType modal_type) {
++  // TODO(erg):
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::FlashFrame(bool flash_frame) {
++  // TODO(erg):
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::OnNativeWidgetFocus() {
++  native_widget_delegate_->AsWidget()->GetInputMethod()->OnFocus();
++}
++
++void DesktopRootWindowHostWayland::OnNativeWidgetBlur() {
++  if (window_)
++    native_widget_delegate_->AsWidget()->GetInputMethod()->OnBlur();
++}
++
++void DesktopRootWindowHostWayland::SetInactiveRenderingDisabled(
++    bool disable_inactive) {
++}
++
++////////////////////////////////////////////////////////////////////////////////
++// DesktopRootWindowHostWayland, aura::RootWindowHost implementation:
++
++void DesktopRootWindowHostWayland::SetDelegate(
++    aura::RootWindowHostDelegate* delegate) {
++  root_window_host_delegate_ = delegate;
++}
++
++aura::RootWindow* DesktopRootWindowHostWayland::GetRootWindow() {
++  return root_window_;
++}
++
++gfx::AcceleratedWidget DesktopRootWindowHostWayland::GetAcceleratedWidget() {
++  return window_;
++}
++
++void DesktopRootWindowHostWayland::Show() {
++  NOTIMPLEMENTED();
++
++  window_mapped_ = true;
++  window_->ScheduleRedraw();
++}
++
++void DesktopRootWindowHostWayland::Hide() {
++  NOTIMPLEMENTED();
++
++  window_mapped_ = false;
++}
++
++void DesktopRootWindowHostWayland::ToggleFullScreen() {
++  NOTIMPLEMENTED();
++}
++
++gfx::Rect DesktopRootWindowHostWayland::GetBounds() const {
++  return bounds_;
++}
++
++void DesktopRootWindowHostWayland::SetBounds(const gfx::Rect& bounds) {
++  bool origin_changed = bounds_.origin() != bounds.origin();
++  bool size_changed = bounds_.size() != bounds.size();
++
++  bounds_ = bounds;
++
++  if (origin_changed)
++    native_widget_delegate_->AsWidget()->OnNativeWidgetMove();
++  if (size_changed)
++    root_window_host_delegate_->OnHostResized(bounds.size());
++  else
++    root_window_host_delegate_->OnHostPaint(gfx::Rect(bounds.size()));
++}
++
++gfx::Insets DesktopRootWindowHostWayland::GetInsets() const {
++  return gfx::Insets();
++}
++
++void DesktopRootWindowHostWayland::SetInsets(const gfx::Insets& insets) {
++}
++
++gfx::Point DesktopRootWindowHostWayland::GetLocationOnNativeScreen() const {
++  return bounds_.origin();
++}
++
++void DesktopRootWindowHostWayland::SetCapture() {
++  // This is vaguely based on the old NativeWidgetGtk implementation.
++  //
++  // X11's XPointerGrab() shouldn't be used for everything; it doesn't map
++  // cleanly to Windows' SetCapture(). GTK only provides a separate concept of
++  // a grab that wasn't the X11 pointer grab, but was instead a manual
++  // redirection of the event. (You need to drop into GDK if you want to
++  // perform a raw X11 grab).
++
++  if (g_current_capture)
++    g_current_capture->OnCaptureReleased();
++
++  g_current_capture = this;
++
++  // TODO(erg): In addition to the above, NativeWidgetGtk performs a full X
++  // pointer grab when our NativeWidget is of type Menu. However, things work
++  // without it. Clicking inside a chrome window causes a release capture, and
++  // clicking outside causes an activation change. Since previous attempts at
++  // using XPointerGrab() to implement this have locked my X server, I'm going
++  // to skip this for now.
++}
++
++void DesktopRootWindowHostWayland::ReleaseCapture() {
++  if (g_current_capture)
++    g_current_capture->OnCaptureReleased();
++}
++
++void DesktopRootWindowHostWayland::SetCursor(gfx::NativeCursor cursor) {
++  NOTIMPLEMENTED();
++}
++
++bool DesktopRootWindowHostWayland::QueryMouseLocation(
++    gfx::Point* location_return) {
++  NOTIMPLEMENTED();
++  return false;
++}
++
++bool DesktopRootWindowHostWayland::ConfineCursorToRootWindow() {
++  NOTIMPLEMENTED();
++  return false;
++}
++
++void DesktopRootWindowHostWayland::UnConfineCursor() {
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::OnCursorVisibilityChanged(bool show) {
++  // TODO(erg): Conditional on us enabling touch on desktop linux builds, do
++  // the same tap-to-click disabling here that chromeos does.
++}
++
++void DesktopRootWindowHostWayland::MoveCursorTo(const gfx::Point& location) {
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::SetFocusWhenShown(bool focus_when_shown) {
++  NOTIMPLEMENTED();
++}
++
++bool DesktopRootWindowHostWayland::CopyAreaToSkCanvas(
++    const gfx::Rect& source_bounds,
++    const gfx::Point& dest_offset,
++    SkCanvas* canvas) {
++  NOTIMPLEMENTED();
++  return false;
++}
++
++bool DesktopRootWindowHostWayland::GrabSnapshot(
++      const gfx::Rect& snapshot_bounds,
++      std::vector<unsigned char>* png_representation) {
++  NOTIMPLEMENTED();
++  return false;
++}
++
++void DesktopRootWindowHostWayland::PostNativeEvent(
++    const base::NativeEvent& native_event) {
++  NOTIMPLEMENTED();
++}
++
++void DesktopRootWindowHostWayland::OnDeviceScaleFactorChanged(
++    float device_scale_factor) {
++}
++
++void DesktopRootWindowHostWayland::PrepareForShutdown() {
++}
++
++#if 0
++////////////////////////////////////////////////////////////////////////////////
++// DesktopRootWindowHostWayland, ui::DesktopSelectionProviderAuraWayland implementation:
++void DesktopRootWindowHostWayland::SetDropHandler(
++    ui::OSExchangeDataProviderAuraWayland* handler) {
++  if (handler) {
++    DCHECK(!drop_handler_);
++    drop_handler_ = handler;
++  } else {
++    DCHECK(drop_handler_);
++    drop_handler_ = NULL;
++  }
++}
++#endif
++////////////////////////////////////////////////////////////////////////////////
++// DesktopRootWindowHostWayland, MessageLoop::Dispatcher implementation:
++
++bool DesktopRootWindowHostWayland::Dispatch(const base::NativeEvent& event) {
++  NOTIMPLEMENTED();
++  return false;
++}
++
++////////////////////////////////////////////////////////////////////////////////
++// DesktopRootWindowHostWayland, ui::WaylandDelegate implementation:
++
++void DesktopRootWindowHostWayland::OnMouseEvent(base::wayland::WaylandEvent* event)
++{
++  if (ui::EventTypeFromNative(event) == ui::ET_MOUSEWHEEL) {
++    ui::MouseWheelEvent wheelev(event);
++    DispatchMouseEvent(&wheelev);
++  } else {
++    ui::MouseEvent mouseev(event);
++    DispatchMouseEvent(&mouseev);
++  }
++}
++
++void DesktopRootWindowHostWayland::OnMouseEnter(base::wayland::WaylandEvent* event)
++{
++}
++
++void DesktopRootWindowHostWayland::OnMouseLeave(base::wayland::WaylandEvent* event)
++{
++}
++
++void DesktopRootWindowHostWayland::OnKeyNotify(base::wayland::WaylandEvent* event)
++{
++  if (static_cast<int>(event->key.state) == 1) {
++    ui::KeyEvent keydown_event(event, false);
++    root_window_host_delegate_->OnHostKeyEvent(&keydown_event);
++  } else {
++    ui::KeyEvent keyup_event(event, false);
++    root_window_host_delegate_->OnHostKeyEvent(&keyup_event);
++  }
++}
++
++void DesktopRootWindowHostWayland::OnKeyboardEnter(base::wayland::WaylandEvent* event)
++{
++}
++
++void DesktopRootWindowHostWayland::OnKeyboardLeave(base::wayland::WaylandEvent* event)
++{
++}
++
++void DesktopRootWindowHostWayland::OnGeometryChange(base::wayland::WaylandEvent* event)
++{
++}
++
++void DesktopRootWindowHostWayland::OnBoundsChanged(const gfx::Rect& old_bounds,
++                                       const gfx::Rect& new_bounds)
++{
++}
++
++int DesktopRootWindowHostWayland::GetNonClientComponent(const gfx::Point& point) const
++{
++  return native_widget_delegate_->GetNonClientComponent(point);
++}
++
++void DesktopRootWindowHostWayland::OnWindowDestroying()
++{
++}
++
++void DesktopRootWindowHostWayland::OnWindowDestroyed()
++{
++}
++
++////////////////////////////////////////////////////////////////////////////////
++// DesktopRootWindowHost, public:
++
++// static
++DesktopRootWindowHost* DesktopRootWindowHost::Create(
++    internal::NativeWidgetDelegate* native_widget_delegate,
++    DesktopNativeWidgetAura* desktop_native_widget_aura,
++    const gfx::Rect& initial_bounds) {
++  return new DesktopRootWindowHostWayland(native_widget_delegate,
++                                          desktop_native_widget_aura,
++                                          initial_bounds);
++}
++
++}  // namespace views
+diff --git a/ui/views/widget/desktop_aura/desktop_root_window_host_wayland.h b/ui/views/widget/desktop_aura/desktop_root_window_host_wayland.h
+new file mode 100644
+index 0000000..a347850
+--- /dev/null
++++ b/ui/views/widget/desktop_aura/desktop_root_window_host_wayland.h
+@@ -0,0 +1,220 @@
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef UI_VIEWS_WIDGET_DESKTOP_AURA_DESKTOP_ROOT_WINDOW_HOST_WAYLAND_H_
++#define UI_VIEWS_WIDGET_DESKTOP_AURA_DESKTOP_ROOT_WINDOW_HOST_WAYLAND_H_
++
++#include "base/basictypes.h"
++#include "base/memory/weak_ptr.h"
++#include "ui/aura/client/cursor_client.h"
++#include "ui/aura/root_window_host.h"
++#include "ui/gfx/rect.h"
++#include "ui/views/views_export.h"
++#include "ui/views/widget/desktop_aura/desktop_root_window_host.h"
++#include "ui/wayland/wayland_delegate.h"
++
++namespace aura {
++namespace client {
++class FocusClient;
++class ScreenPositionClient;
++}
++}
++
++namespace views {
++class DesktopActivationClient;
++class DesktopCaptureClient;
++class DesktopDragDropClientAuraWayland;
++class DesktopDispatcherClient;
++class WaylandDesktopWindowMoveClient;
++class WaylandWindowEventFilter;
++
++namespace corewm {
++class CursorManager;
++}
++
++class VIEWS_EXPORT DesktopRootWindowHostWayland :
++    public DesktopRootWindowHost,
++    public aura::RootWindowHost,
++    public ui::WaylandDelegate,
++    public base::MessageLoop::Dispatcher {
++ public:
++  DesktopRootWindowHostWayland(
++      internal::NativeWidgetDelegate* native_widget_delegate,
++      DesktopNativeWidgetAura* desktop_native_widget_aura,
++      const gfx::Rect& bounds);
++  virtual ~DesktopRootWindowHostWayland();
++
++  // Called by WaylandDesktopHandler to notify us that the native windowing system
++  // has changed our activation.
++  void HandleNativeWidgetActivationChanged(bool active);
++
++ private:
++  // Initializes our Wayland surface to draw on. This method performs all
++  // initialization related to talking to the Wayland server.
++  void InitWaylandWindow(const Widget::InitParams& params);
++
++  // Creates an aura::RootWindow to contain the |content_window|, along with
++  // all aura client objects that direct behavior.
++  aura::RootWindow* InitRootWindow(const Widget::InitParams& params);
++
++  // Returns true if there's an X window manager present... in most cases.  Some
++  // window managers (notably, ion3) don't implement enough of ICCCM for us to
++  // detect that they're there.
++  bool IsWindowManagerPresent();
++
++  // Called when another DRWHL takes capture, or when capture is released
++  // entirely.
++  void OnCaptureReleased();
++
++  // Dispatches a mouse event, taking mouse capture into account. If a
++  // different host has capture, we translate the event to its coordinate space
++  // and dispatch it to that host instead.
++  void DispatchMouseEvent(ui::MouseEvent* event);
++
++  // Overridden from DesktopRootWindowHost:
++  virtual aura::RootWindow* Init(aura::Window* content_window,
++                                 const Widget::InitParams& params) OVERRIDE;
++  virtual void InitFocus(aura::Window* window) OVERRIDE;
++  virtual void Close() OVERRIDE;
++  virtual void CloseNow() OVERRIDE;
++  virtual aura::RootWindowHost* AsRootWindowHost() OVERRIDE;
++  virtual void ShowWindowWithState(ui::WindowShowState show_state) OVERRIDE;
++  virtual void ShowMaximizedWithBounds(
++      const gfx::Rect& restored_bounds) OVERRIDE;
++  virtual bool IsVisible() const OVERRIDE;
++  virtual void SetSize(const gfx::Size& size) OVERRIDE;
++  virtual void CenterWindow(const gfx::Size& size) OVERRIDE;
++  virtual void GetWindowPlacement(
++      gfx::Rect* bounds,
++      ui::WindowShowState* show_state) const OVERRIDE;
++  virtual gfx::Rect GetWindowBoundsInScreen() const OVERRIDE;
++  virtual gfx::Rect GetClientAreaBoundsInScreen() const OVERRIDE;
++  virtual gfx::Rect GetRestoredBounds() const OVERRIDE;
++  virtual gfx::Rect GetWorkAreaBoundsInScreen() const OVERRIDE;
++  virtual void SetShape(gfx::NativeRegion native_region) OVERRIDE;
++  virtual void Activate() OVERRIDE;
++  virtual void Deactivate() OVERRIDE;
++  virtual bool IsActive() const OVERRIDE;
++  virtual void Maximize() OVERRIDE;
++  virtual void Minimize() OVERRIDE;
++  virtual void Restore() OVERRIDE;
++  virtual bool IsMaximized() const OVERRIDE;
++  virtual bool IsMinimized() const OVERRIDE;
++  virtual bool HasCapture() const OVERRIDE;
++  virtual void SetAlwaysOnTop(bool always_on_top) OVERRIDE;
++  virtual void SetWindowTitle(const string16& title) OVERRIDE;
++  virtual void ClearNativeFocus() OVERRIDE;
++  virtual Widget::MoveLoopResult RunMoveLoop(
++      const gfx::Vector2d& drag_offset,
++      Widget::MoveLoopSource source) OVERRIDE;
++  virtual void EndMoveLoop() OVERRIDE;
++  virtual void SetVisibilityChangedAnimationsEnabled(bool value) OVERRIDE;
++  virtual bool ShouldUseNativeFrame() OVERRIDE;
++  virtual void FrameTypeChanged() OVERRIDE;
++  virtual NonClientFrameView* CreateNonClientFrameView() OVERRIDE;
++  virtual void SetFullscreen(bool fullscreen) OVERRIDE;
++  virtual bool IsFullscreen() const OVERRIDE;
++  virtual void SetOpacity(unsigned char opacity) OVERRIDE;
++  virtual void SetWindowIcons(const gfx::ImageSkia& window_icon,
++                              const gfx::ImageSkia& app_icon) OVERRIDE;
++  virtual void InitModalType(ui::ModalType modal_type) OVERRIDE;
++  virtual void FlashFrame(bool flash_frame) OVERRIDE;
++  virtual void OnNativeWidgetFocus() OVERRIDE;
++  virtual void OnNativeWidgetBlur() OVERRIDE;
++  virtual void SetInactiveRenderingDisabled(bool disable_inactive) OVERRIDE;
++
++  // Overridden from aura::RootWindowHost:
++  virtual void SetDelegate(aura::RootWindowHostDelegate* delegate) OVERRIDE;
++  virtual aura::RootWindow* GetRootWindow() OVERRIDE;
++  virtual gfx::AcceleratedWidget GetAcceleratedWidget() OVERRIDE;
++  virtual void Show() OVERRIDE;
++  virtual void Hide() OVERRIDE;
++  virtual void ToggleFullScreen() OVERRIDE;
++  virtual gfx::Rect GetBounds() const OVERRIDE;
++  virtual void SetBounds(const gfx::Rect& bounds) OVERRIDE;
++  virtual gfx::Insets GetInsets() const OVERRIDE;
++  virtual void SetInsets(const gfx::Insets& insets) OVERRIDE;
++  virtual gfx::Point GetLocationOnNativeScreen() const OVERRIDE;
++  virtual void SetCapture() OVERRIDE;
++  virtual void ReleaseCapture() OVERRIDE;
++  virtual void SetCursor(gfx::NativeCursor cursor) OVERRIDE;
++  virtual bool QueryMouseLocation(gfx::Point* location_return) OVERRIDE;
++  virtual bool ConfineCursorToRootWindow() OVERRIDE;
++  virtual void UnConfineCursor() OVERRIDE;
++  virtual void OnCursorVisibilityChanged(bool show) OVERRIDE;
++  virtual void MoveCursorTo(const gfx::Point& location) OVERRIDE;
++  virtual void SetFocusWhenShown(bool focus_when_shown) OVERRIDE;
++  virtual bool CopyAreaToSkCanvas(const gfx::Rect& source_bounds,
++                                  const gfx::Point& dest_offset,
++                                  SkCanvas* canvas) OVERRIDE;
++  virtual bool GrabSnapshot(
++      const gfx::Rect& snapshot_bounds,
++      std::vector<unsigned char>* png_representation) OVERRIDE;
++  virtual void PostNativeEvent(const base::NativeEvent& native_event) OVERRIDE;
++  virtual void OnDeviceScaleFactorChanged(float device_scale_factor) OVERRIDE;
++  virtual void PrepareForShutdown() OVERRIDE;
++
++  // Overridden from DesktopSelectionProviderAuraWayland:
++  //virtual void SetDropHandler(
++  //    ui::OSExchangeDataProviderAuraWayland* handler) OVERRIDE;
++
++  // Overridden from Dispatcher:
++  virtual bool Dispatch(const base::NativeEvent& event) OVERRIDE;
++
++  // Overridden from ui::WaylandDelegate:
++  virtual void OnMouseEvent(base::wayland::WaylandEvent* event) OVERRIDE;
++  virtual void OnKeyNotify(base::wayland::WaylandEvent* event) OVERRIDE;
++  virtual void OnKeyboardEnter(base::wayland::WaylandEvent* event) OVERRIDE;
++  virtual void OnKeyboardLeave(base::wayland::WaylandEvent* event) OVERRIDE;
++  virtual void OnMouseEnter(base::wayland::WaylandEvent* event) OVERRIDE;
++  virtual void OnMouseLeave(base::wayland::WaylandEvent* event) OVERRIDE;
++  virtual void OnGeometryChange(base::wayland::WaylandEvent* event) OVERRIDE;
++  virtual void OnBoundsChanged(const gfx::Rect& old_bounds,
++    const gfx::Rect& new_bounds) OVERRIDE;
++  virtual void OnWindowDestroying() OVERRIDE;
++  virtual void OnWindowDestroyed() OVERRIDE;
++  virtual int GetNonClientComponent(const gfx::Point& point) const;
++
++  base::WeakPtrFactory<DesktopRootWindowHostWayland> close_widget_factory_;
++
++  // We are owned by the RootWindow, but we have to have a back pointer to it.
++  aura::RootWindow* root_window_;
++
++  // aura:: objects that we own.
++  scoped_ptr<DesktopCaptureClient> capture_client_;
++  scoped_ptr<aura::client::FocusClient> focus_client_;
++  scoped_ptr<DesktopActivationClient> activation_client_;
++  scoped_ptr<views::corewm::CursorManager> cursor_client_;
++  scoped_ptr<DesktopDispatcherClient> dispatcher_client_;
++  scoped_ptr<aura::client::ScreenPositionClient> position_client_;
++
++  internal::NativeWidgetDelegate* native_widget_delegate_;
++
++  // The display and the native window hosting the root window.
++  ui::WaylandDisplay* display_;
++  ui::WaylandWindow* window_;
++
++  // Is the window mapped to the screen?
++  bool window_mapped_;
++
++  gfx::Rect bounds_;
++
++  aura::RootWindowHostDelegate* root_window_host_delegate_;
++  aura::Window* content_window_;
++
++  DesktopNativeWidgetAura* desktop_native_widget_aura_;
++
++  // The current root window host that has capture. While X11 has something
++  // like Windows SetCapture()/ReleaseCapture(), it is entirely implicit and
++  // there are no notifications when this changes. We need to track this so we
++  // can notify widgets when they have lost capture, which controls a bunch of
++  // things in views like hiding menus.
++  static DesktopRootWindowHostWayland* g_current_capture;
++
++  DISALLOW_COPY_AND_ASSIGN(DesktopRootWindowHostWayland);
++};
++
++}  // namespace views
++
++#endif  // UI_VIEWS_WIDGET_DESKTOP_AURA_DESKTOP_ROOT_WINDOW_HOST_WAYLAND_H_
+-- 
+1.7.9.5
+

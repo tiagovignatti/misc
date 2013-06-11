@@ -1,0 +1,90 @@
+From 5e1ca665ac85a6eb8872e21769351d2b91e8b9a0 Mon Sep 17 00:00:00 2001
+From: Tiago Vignatti <tiago.vignatti@intel.com>
+Date: Fri, 3 May 2013 18:49:05 -0300
+Subject: [PATCH 16/19] content/browser: Add power save stubs for Wayland
+
+Signed-off-by: Tiago Vignatti <tiago.vignatti@intel.com>
+---
+ content/browser/power_save_blocker_wayland.cc |   57 +++++++++++++++++++++++++
+ content/content_browser.gypi                  |    1 +
+ 2 files changed, 58 insertions(+)
+ create mode 100644 content/browser/power_save_blocker_wayland.cc
+
+diff --git a/content/browser/power_save_blocker_wayland.cc b/content/browser/power_save_blocker_wayland.cc
+new file mode 100644
+index 0000000..693f187
+--- /dev/null
++++ b/content/browser/power_save_blocker_wayland.cc
+@@ -0,0 +1,57 @@
++// Copyright (c) 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "content/browser/power_save_blocker_impl.h"
++
++#include <string>
++
++#include "base/basictypes.h"
++#include "base/bind.h"
++#include "base/location.h"
++#include "base/logging.h"
++#include "base/memory/ref_counted.h"
++#include "content/public/browser/browser_thread.h"
++
++namespace content {
++
++class PowerSaveBlockerImpl::Delegate
++    : public base::RefCountedThreadSafe<PowerSaveBlockerImpl::Delegate> {
++ public:
++  Delegate(PowerSaveBlockerType type, const std::string& reason)
++      : type_(type),
++        reason_(reason),
++        block_id_(0) {}
++
++  void ApplyBlock() {
++  }
++
++  void RemoveBlock() {
++  }
++
++ private:
++  friend class base::RefCountedThreadSafe<Delegate>;
++  virtual ~Delegate() {}
++
++  PowerSaveBlockerType type_;
++  std::string reason_;
++
++  // ID corresponding to the block request in PowerPolicyController.
++  int block_id_;
++
++  DISALLOW_COPY_AND_ASSIGN(Delegate);
++};
++
++PowerSaveBlockerImpl::PowerSaveBlockerImpl(PowerSaveBlockerType type,
++                                           const std::string& reason)
++    : delegate_(new Delegate(type, reason)) {
++  BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
++                          base::Bind(&Delegate::ApplyBlock, delegate_));
++}
++
++PowerSaveBlockerImpl::~PowerSaveBlockerImpl() {
++  BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
++                          base::Bind(&Delegate::RemoveBlock, delegate_));
++}
++
++}  // namespace content
+diff --git a/content/content_browser.gypi b/content/content_browser.gypi
+index 0f38afc..50edc2a 100644
+--- a/content/content_browser.gypi
++++ b/content/content_browser.gypi
+@@ -697,6 +697,7 @@
+     'browser/power_save_blocker_impl.cc',
+     'browser/power_save_blocker_impl.h',
+     'browser/power_save_blocker_mac.cc',
++    'browser/power_save_blocker_wayland.cc',
+     'browser/power_save_blocker_ozone.cc',
+     'browser/power_save_blocker_win.cc',
+     'browser/power_save_blocker_x11.cc',
+-- 
+1.7.9.5
+

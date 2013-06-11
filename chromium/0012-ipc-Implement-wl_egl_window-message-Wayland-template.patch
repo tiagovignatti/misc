@@ -1,0 +1,55 @@
+From 56193a3b0ecd16b43cd7bee27a15f9a014910f54 Mon Sep 17 00:00:00 2001
+From: Tiago Vignatti <tiago.vignatti@intel.com>
+Date: Thu, 2 May 2013 17:19:42 -0300
+Subject: [PATCH 12/19] ipc: Implement wl_egl_window message (Wayland)
+ template
+
+TODO: transport dib commit can come up here together
+
+Signed-off-by: Tiago Vignatti <tiago.vignatti@intel.com>
+---
+ ipc/ipc_message_utils.h |   28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/ipc/ipc_message_utils.h b/ipc/ipc_message_utils.h
+index 7fda943..1330187 100644
+--- a/ipc/ipc_message_utils.h
++++ b/ipc/ipc_message_utils.h
+@@ -686,6 +686,34 @@ struct IPC_EXPORT ParamTraits<Message> {
+   static void Log(const Message& p, std::string* l);
+ };
+ 
++// Wayland ParamTraits ---------------------------------------------------------
++
++#if defined(USE_WAYLAND)
++template <>
++struct IPC_EXPORT ParamTraits<ui::WaylandWindow*> {
++  typedef ui::WaylandWindow* param_type;
++  static void Write(Message* m, const param_type& p) {
++    m->WriteData(reinterpret_cast<const char*>(&p), sizeof(ui::WaylandWindow*));
++       }
++  static bool Read(const Message* m, PickleIterator* iter, param_type* r) {
++    const char *data;
++    int data_size = 0;
++    bool result = m->ReadData(iter, &data, &data_size);
++    if (result && data_size == sizeof(ui::WaylandWindow*)) {
++      memcpy(r, data, sizeof(ui::WaylandWindow*));
++    } else {
++      result = false;
++      NOTREACHED();
++    }
++
++    return result;
++       }
++  static void Log(const param_type& p, std::string* l) {
++    l->append("<ui::WaylandWindow*>");
++       }
++};
++#endif
++
+ // Windows ParamTraits ---------------------------------------------------------
+ 
+ #if defined(OS_WIN)
+-- 
+1.7.9.5
+

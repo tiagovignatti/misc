@@ -1,0 +1,675 @@
+From ccd5609e2f35c4e690c99b53f57b96102f8a8074 Mon Sep 17 00:00:00 2001
+From: Tiago Vignatti <tiago.vignatti@intel.com>
+Date: Thu, 25 Apr 2013 14:48:11 -0300
+Subject: [PATCH 06/19] ui: Add GL implementation and native types for Wayland
+
+Signed-off-by: Tiago Vignatti <tiago.vignatti@intel.com>
+---
+ third_party/khronos/EGL/eglplatform.h |    6 ++
+ ui/gfx/native_widget_types.h          |   10 +++
+ ui/gl/gl.gyp                          |   16 ++++
+ ui/gl/gl_bindings.h                   |    9 +-
+ ui/gl/gl_context_wayland.cc           |   42 +++++++++
+ ui/gl/gl_image_wayland.cc             |   41 +++++++++
+ ui/gl/gl_implementation.cc            |    4 +
+ ui/gl/gl_implementation_wayland.cc    |  159 +++++++++++++++++++++++++++++++++
+ ui/gl/gl_surface_egl.cc               |   36 +++++++-
+ ui/gl/gl_surface_egl.h                |    9 ++
+ ui/gl/gl_surface_wayland.cc           |   73 +++++++++++++++
+ ui/ui.gyp                             |    3 +-
+ 12 files changed, 402 insertions(+), 6 deletions(-)
+ create mode 100644 ui/gl/gl_context_wayland.cc
+ create mode 100644 ui/gl/gl_image_wayland.cc
+ create mode 100644 ui/gl/gl_implementation_wayland.cc
+ create mode 100644 ui/gl/gl_surface_wayland.cc
+
+diff --git a/third_party/khronos/EGL/eglplatform.h b/third_party/khronos/EGL/eglplatform.h
+index c7d3d7b..0dd70a6 100644
+--- a/third_party/khronos/EGL/eglplatform.h
++++ b/third_party/khronos/EGL/eglplatform.h
+@@ -100,6 +100,12 @@ typedef int      EGLNativeDisplayType;
+ typedef intptr_t EGLNativeWindowType;
+ typedef intptr_t EGLNativePixmapType;
+ 
++#elif defined(USE_WAYLAND)
++
++typedef struct wl_display    *EGLNativeDisplayType;
++typedef struct wl_egl_pixmap *EGLNativePixmapType;
++typedef struct wl_egl_window *EGLNativeWindowType;
++
+ #elif defined(__unix__)
+ 
+ /* X11 (tentative)  */
+diff --git a/ui/gfx/native_widget_types.h b/ui/gfx/native_widget_types.h
+index eb6dcb4..483f8da 100644
+--- a/ui/gfx/native_widget_types.h
++++ b/ui/gfx/native_widget_types.h
+@@ -112,6 +112,10 @@ namespace ui {
+ class WindowAndroid;
+ class ViewAndroid;
+ }
++#elif defined(USE_WAYLAND)
++namespace ui {
++class WaylandWindow;
++}
+ #endif
+ class SkBitmap;
+ 
+@@ -253,6 +257,9 @@ static inline NativeView NativeViewFromIdInBrowser(NativeViewId id) {
+ #elif defined(USE_OZONE)
+   typedef intptr_t PluginWindowHandle;
+   const PluginWindowHandle kNullPluginWindow = 0;
++#elif defined(USE_WAYLAND)
++  typedef ui::WaylandWindow* PluginWindowHandle;
++  const PluginWindowHandle kNullPluginWindow = NULL;
+ #else
+   // On OS X we don't have windowed plugins.
+   // We use a NULL/0 PluginWindowHandle in shared code to indicate there
+@@ -321,6 +328,9 @@ const AcceleratedWidget kNullAcceleratedWidget = 0;
+ #elif defined(USE_OZONE)
+ typedef intptr_t AcceleratedWidget;
+ const AcceleratedWidget kNullAcceleratedWidget = 0;
++#elif defined(USE_WAYLAND)
++typedef ui::WaylandWindow* AcceleratedWidget;
++const AcceleratedWidget kNullAcceleratedWidget = NULL;
+ #else
+ #error unknown platform
+ #endif
+diff --git a/ui/gl/gl.gyp b/ui/gl/gl.gyp
+index 1f326ba..70232f0 100644
+--- a/ui/gl/gl.gyp
++++ b/ui/gl/gl.gyp
+@@ -60,6 +60,7 @@
+         'gl_context_osmesa.h',
+         'gl_context_stub.cc',
+         'gl_context_stub.h',
++        'gl_context_wayland.cc',
+         'gl_context_win.cc',
+         'gl_context_x11.cc',
+         'gl_export.h',
+@@ -75,6 +76,7 @@
+         'gl_image_stub.cc',
+         'gl_image_stub.h',
+         'gl_image_win.cc',
++        'gl_image_wayland.cc',
+         'gl_image_x11.cc',
+         'gl_implementation.cc',
+         'gl_implementation.h',
+@@ -82,6 +84,7 @@
+         'gl_implementation_ozone.cc',
+         'gl_implementation_mac.cc',
+         'gl_implementation_win.cc',
++        'gl_implementation_wayland.cc',
+         'gl_implementation_x11.cc',
+         'gl_interface.cc',
+         'gl_interface.h',
+@@ -96,6 +99,7 @@
+         'gl_surface_mac.cc',
+         'gl_surface_stub.cc',
+         'gl_surface_stub.h',
++        'gl_surface_wayland.cc',
+         'gl_surface_win.cc',
+         'gl_surface_x11.cc',
+         'gl_surface_osmesa.cc',
+@@ -222,6 +226,18 @@
+             ],
+           },
+         }],
++        [ 'use_wayland==1', {
++          'dependencies': [
++            '<(DEPTH)/build/linux/system.gyp:wayland',
++          ],
++          'export_dependent_settings': [
++            '<(DEPTH)/build/linux/system.gyp:wayland',
++          ],
++          'sources': [
++            'gl_egl_api_implementation.cc',
++            'gl_egl_api_implementation.h',
++          ],
++        }],
+         ['OS=="win"', {
+           'sources': [
+             'gl_context_wgl.cc',
+diff --git a/ui/gl/gl_bindings.h b/ui/gl/gl_bindings.h
+index a09cd71..b5bf32c 100644
+--- a/ui/gl/gl_bindings.h
++++ b/ui/gl/gl_bindings.h
+@@ -203,6 +203,8 @@ typedef uint64 EGLuint64CHROMIUM;
+ #if defined(OS_WIN)
+ #include "gl_bindings_autogen_egl.h"
+ #include "gl_bindings_autogen_wgl.h"
++#elif defined(USE_WAYLAND)
++#include "gl_bindings_autogen_egl.h"
+ #elif defined(USE_X11)
+ #include "gl_bindings_autogen_egl.h"
+ #include "gl_bindings_autogen_glx.h"
+@@ -257,7 +259,7 @@ struct GL_EXPORT DriverWGL {
+ };
+ #endif
+ 
+-#if defined(OS_WIN) || defined(USE_X11) || defined(OS_ANDROID) || defined(USE_OZONE)
++#if defined(OS_WIN) || defined(USE_WAYLAND) || defined(USE_X11) || defined(OS_ANDROID) || defined(USE_OZONE)
+ struct GL_EXPORT DriverEGL {
+   void InitializeBindings();
+   void InitializeExtensionBindings(GLContext* context);
+@@ -297,6 +299,11 @@ GL_EXPORT extern WGLApi* g_current_wgl_context;
+ GL_EXPORT extern DriverEGL g_driver_egl;
+ GL_EXPORT extern DriverWGL g_driver_wgl;
+ 
++#elif defined(USE_WAYLAND)
++
++GL_EXPORT extern EGLApi* g_current_egl_context;
++GL_EXPORT extern DriverEGL g_driver_egl;
++
+ #elif defined(USE_X11)
+ 
+ GL_EXPORT extern EGLApi* g_current_egl_context;
+diff --git a/ui/gl/gl_context_wayland.cc b/ui/gl/gl_context_wayland.cc
+new file mode 100644
+index 0000000..e1af0c6
+--- /dev/null
++++ b/ui/gl/gl_context_wayland.cc
+@@ -0,0 +1,42 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/gl/gl_context.h"
++
++#include "base/debug/trace_event.h"
++#include "base/logging.h"
++#include "base/memory/scoped_ptr.h"
++#include "ui/gl/gl_bindings.h"
++#include "ui/gl/gl_context_egl.h"
++#include "ui/gl/gl_context_stub.h"
++#include "ui/gl/gl_implementation.h"
++#include "ui/gl/gl_surface_egl.h"
++#include "ui/gl/gl_surface_stub.h"
++
++namespace gfx {
++
++class GLShareGroup;
++
++scoped_refptr<GLContext> GLContext::CreateGLContext(
++    GLShareGroup* share_group,
++    GLSurface* compatible_surface,
++    GpuPreference gpu_preference) {
++  TRACE_EVENT0("gpu", "GLContext::CreateGLContext");
++  switch (GetGLImplementation()) {
++    case kGLImplementationEGLGLES2: {
++      scoped_refptr<GLContext> context(new GLContextEGL(share_group));
++      if (!context->Initialize(compatible_surface, gpu_preference))
++        return NULL;
++
++      return context;
++    }
++    case kGLImplementationMockGL:
++      return new GLContextStub;
++    default:
++      NOTREACHED();
++      return NULL;
++  }
++}
++
++}  // namespace gfx
+diff --git a/ui/gl/gl_image_wayland.cc b/ui/gl/gl_image_wayland.cc
+new file mode 100644
+index 0000000..50df2b8
+--- /dev/null
++++ b/ui/gl/gl_image_wayland.cc
+@@ -0,0 +1,41 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/gl/gl_image.h"
++
++#include "base/debug/trace_event.h"
++#include "ui/gl/gl_image_egl.h"
++#include "ui/gl/gl_image_stub.h"
++#include "ui/gl/gl_implementation.h"
++
++namespace gfx {
++
++scoped_refptr<GLImage> GLImage::CreateGLImage(gfx::PluginWindowHandle window) {
++  TRACE_EVENT0("gpu", "GLImage::CreateGLImage");
++  switch (GetGLImplementation()) {
++    case kGLImplementationEGLGLES2:
++      return NULL;
++    case kGLImplementationMockGL:
++      return new GLImageStub;
++    default:
++      NOTREACHED();
++      return NULL;
++  }
++}
++
++scoped_refptr<GLImage> GLImage::CreateGLImageForGpuMemoryBuffer(
++    gfx::GpuMemoryBufferHandle buffer, gfx::Size size) {
++  TRACE_EVENT0("gpu", "GLImage::CreateGLImageForGpuMemoryBuffer");
++  switch (GetGLImplementation()) {
++    case kGLImplementationEGLGLES2:
++      return NULL;
++    case kGLImplementationMockGL:
++      return new GLImageStub;
++    default:
++      NOTREACHED();
++      return NULL;
++  }
++}
++
++}  // namespace gfx
+diff --git a/ui/gl/gl_implementation.cc b/ui/gl/gl_implementation.cc
+index 7fe6486..1e958e4 100644
+--- a/ui/gl/gl_implementation.cc
++++ b/ui/gl/gl_implementation.cc
+@@ -71,6 +71,10 @@ OSMESAApi* g_current_osmesa_context;
+ EGLApi* g_current_egl_context;
+ WGLApi* g_current_wgl_context;
+ 
++#elif defined(USE_WAYLAND)
++
++EGLApi* g_current_egl_context;
++
+ #elif defined(USE_X11)
+ 
+ EGLApi* g_current_egl_context;
+diff --git a/ui/gl/gl_implementation_wayland.cc b/ui/gl/gl_implementation_wayland.cc
+new file mode 100644
+index 0000000..d8b61c4
+--- /dev/null
++++ b/ui/gl/gl_implementation_wayland.cc
+@@ -0,0 +1,159 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <vector>
++
++#include "base/base_paths.h"
++#include "base/command_line.h"
++#include "base/files/file_path.h"
++#include "base/logging.h"
++#include "base/native_library.h"
++#include "base/path_service.h"
++#include "base/threading/thread_restrictions.h"
++#include "ui/gl/gl_bindings.h"
++#include "ui/gl/gl_egl_api_implementation.h"
++#include "ui/gl/gl_gl_api_implementation.h"
++#include "ui/gl/gl_implementation.h"
++#include "ui/gl/gl_switches.h"
++
++namespace gfx {
++namespace {
++
++// TODO(piman): it should be Desktop GL marshalling from double to float. Today
++// on native GLES, we do float->double->float.
++void GL_BINDING_CALL MarshalClearDepthToClearDepthf(GLclampd depth) {
++  glClearDepthf(static_cast<GLclampf>(depth));
++}
++
++void GL_BINDING_CALL MarshalDepthRangeToDepthRangef(GLclampd z_near,
++                                                    GLclampd z_far) {
++  glDepthRangef(static_cast<GLclampf>(z_near), static_cast<GLclampf>(z_far));
++}
++
++// Load a library, printing an error message on failure.
++base::NativeLibrary LoadLibrary(const base::FilePath& filename) {
++  std::string error;
++  base::NativeLibrary library = base::LoadNativeLibrary(filename,
++                                                        &error);
++  if (!library) {
++    DVLOG(1) << "Failed to load " << filename.MaybeAsASCII() << ": " << error;
++    return NULL;
++  }
++  return library;
++}
++
++base::NativeLibrary LoadLibrary(const char* filename) {
++  return LoadLibrary(base::FilePath(filename));
++}
++
++}  // namespace
++
++void GetAllowedGLImplementations(std::vector<GLImplementation>* impls) {
++  impls->push_back(kGLImplementationEGLGLES2);
++}
++
++bool InitializeGLBindings(GLImplementation implementation) {
++  // Prevent reinitialization with a different implementation. Once the gpu
++  // unit tests have initialized with kGLImplementationMock, we don't want to
++  // later switch to another GL implementation.
++  if (GetGLImplementation() != kGLImplementationNone)
++    return true;
++
++  // Allow the main thread or another to initialize these bindings
++  // after instituting restrictions on I/O. Going forward they will
++  // likely be used in the browser process on most platforms. The
++  // one-time initialization cost is small, between 2 and 5 ms.
++  base::ThreadRestrictions::ScopedAllowIO allow_io;
++
++  switch (implementation) {
++    case kGLImplementationEGLGLES2: {
++      base::NativeLibrary gles_library = LoadLibrary("libGLESv2.so.2");
++      if (!gles_library)
++        return false;
++      base::NativeLibrary egl_library = LoadLibrary("libEGL.so.1");
++      if (!egl_library) {
++        base::UnloadNativeLibrary(gles_library);
++        return false;
++      }
++
++      GLGetProcAddressProc get_proc_address =
++          reinterpret_cast<GLGetProcAddressProc>(
++              base::GetFunctionPointerFromNativeLibrary(
++                  egl_library, "eglGetProcAddress"));
++      if (!get_proc_address) {
++        LOG(ERROR) << "eglGetProcAddress not found.";
++        base::UnloadNativeLibrary(egl_library);
++        base::UnloadNativeLibrary(gles_library);
++        return false;
++      }
++
++      SetGLGetProcAddressProc(get_proc_address);
++      AddGLNativeLibrary(egl_library);
++      AddGLNativeLibrary(gles_library);
++      SetGLImplementation(kGLImplementationEGLGLES2);
++
++      InitializeGLBindingsGL();
++      InitializeGLBindingsEGL();
++
++      // These two functions take single precision float rather than double
++      // precision float parameters in GLES.
++      ::gfx::g_driver_gl.fn.glClearDepthFn = MarshalClearDepthToClearDepthf;
++      ::gfx::g_driver_gl.fn.glDepthRangeFn = MarshalDepthRangeToDepthRangef;
++      break;
++    }
++    case kGLImplementationMockGL: {
++      SetGLGetProcAddressProc(GetMockGLProcAddress);
++      SetGLImplementation(kGLImplementationMockGL);
++      InitializeGLBindingsGL();
++      break;
++    }
++    default:
++      return false;
++  }
++
++
++  return true;
++}
++
++bool InitializeGLExtensionBindings(GLImplementation implementation,
++    GLContext* context) {
++  switch (implementation) {
++    case kGLImplementationEGLGLES2:
++      InitializeGLExtensionBindingsGL(context);
++      InitializeGLExtensionBindingsEGL(context);
++      break;
++    case kGLImplementationMockGL:
++      InitializeGLExtensionBindingsGL(context);
++      break;
++    default:
++      return false;
++  }
++
++  return true;
++}
++
++void InitializeDebugGLBindings() {
++  InitializeDebugGLBindingsEGL();
++  InitializeDebugGLBindingsGL();
++}
++
++void ClearGLBindings() {
++  ClearGLBindingsEGL();
++  ClearGLBindingsGL();
++  SetGLImplementation(kGLImplementationNone);
++
++  UnloadGLNativeLibraries();
++}
++
++bool GetGLWindowSystemBindingInfo(GLWindowSystemBindingInfo* info) {
++  switch (GetGLImplementation()) {
++    case kGLImplementationEGLGLES2:
++      return GetGLWindowSystemBindingInfoEGL(info);
++    default:
++      return false;
++  }
++  return false;
++}
++
++}  // namespace gfx
+diff --git a/ui/gl/gl_surface_egl.cc b/ui/gl/gl_surface_egl.cc
+index b99b7b4..9a63ae2 100644
+--- a/ui/gl/gl_surface_egl.cc
++++ b/ui/gl/gl_surface_egl.cc
+@@ -28,6 +28,12 @@ extern "C" {
+ #include "ui/base/ozone/surface_factory_ozone.h"
+ #endif
+ 
++#if defined(USE_WAYLAND)
++#include "ui/wayland/wayland_display.h"
++#include "ui/wayland/wayland_window.h"
++#include <wayland-egl.h>
++#endif
++
+ using ui::GetLastEGLErrorString;
+ 
+ namespace gfx {
+@@ -91,7 +97,9 @@ bool GLSurfaceEGL::InitializeOneOff() {
+   ui::SurfaceFactoryOzone::GetInstance()->InitializeHardware();
+ #endif
+ 
+-#if defined(USE_X11)
++#if defined(USE_WAYLAND)
++  g_native_display = ui::WaylandDisplay::GetDisplay()->display();
++#elif defined(USE_X11)
+   g_native_display = base::MessagePumpForUI::GetDefaultXDisplay();
+ #else
+   g_native_display = EGL_DEFAULT_DISPLAY;
+@@ -116,7 +124,12 @@ bool GLSurfaceEGL::InitializeOneOff() {
+     EGL_GREEN_SIZE, 8,
+     EGL_RED_SIZE, 8,
+     EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+-    EGL_SURFACE_TYPE, EGL_WINDOW_BIT | EGL_PBUFFER_BIT,
++    EGL_SURFACE_TYPE,
++#if defined(USE_WAYLAND)
++    EGL_WINDOW_BIT,
++#else
++    EGL_WINDOW_BIT | EGL_PBUFFER_BIT,
++#endif
+     EGL_NONE
+   };
+ 
+@@ -220,7 +233,11 @@ bool NativeViewGLSurfaceEGL::Initialize(VSyncProvider* sync_provider) {
+   surface_ = eglCreateWindowSurface(
+       GetDisplay(),
+       GetConfig(),
++#if defined(USE_WAYLAND)
++      window_->egl_window(),
++#else
+       window_,
++#endif
+       gfx::g_driver_egl.ext.b_EGL_NV_post_sub_buffer ?
+           egl_window_attributes_sub_buffer :
+           NULL);
+@@ -257,7 +274,7 @@ void NativeViewGLSurfaceEGL::Destroy() {
+ }
+ 
+ EGLConfig NativeViewGLSurfaceEGL::GetConfig() {
+-#if !defined(USE_X11)
++#if !defined(USE_X11) || defined(USE_WAYLAND)
+   return g_config;
+ #else
+   if (!config_) {
+@@ -343,7 +360,6 @@ bool NativeViewGLSurfaceEGL::SwapBuffers() {
+              << GetLastEGLErrorString();
+     return false;
+   }
+-
+   return true;
+ }
+ 
+@@ -361,6 +377,9 @@ gfx::Size NativeViewGLSurfaceEGL::GetSize() {
+ }
+ 
+ bool NativeViewGLSurfaceEGL::Resize(const gfx::Size& size) {
++#if defined(USE_WAYLAND)
++  window_->ScheduleResize(size.width(), size.height());
++#endif
+   if (size == GetSize())
+     return true;
+ 
+@@ -453,6 +472,14 @@ bool PbufferGLSurfaceEGL::Initialize() {
+     return false;
+   }
+ 
++#if defined(USE_WAYLAND)
++  wsurf_ = ui::WaylandDisplay::GetDisplay()->CreateSurface();
++  wwindow_ = wl_egl_window_create(wsurf_, size_.width(), size_.height());
++  EGLSurface new_surface = eglCreateWindowSurface(GetDisplay(),
++                                                  GetConfig(),
++                                                  wwindow_,
++                                                  NULL);
++#else
+   // Allocate the new pbuffer surface before freeing the old one to ensure
+   // they have different addresses. If they have the same address then a
+   // future call to MakeCurrent might early out because it appears the current
+@@ -466,6 +493,7 @@ bool PbufferGLSurfaceEGL::Initialize() {
+   EGLSurface new_surface = eglCreatePbufferSurface(display,
+                                                    GetConfig(),
+                                                    pbuffer_attribs);
++#endif
+   if (!new_surface) {
+     LOG(ERROR) << "eglCreatePbufferSurface failed with error "
+                << GetLastEGLErrorString();
+diff --git a/ui/gl/gl_surface_egl.h b/ui/gl/gl_surface_egl.h
+index e6a13cb..ee0f312 100644
+--- a/ui/gl/gl_surface_egl.h
++++ b/ui/gl/gl_surface_egl.h
+@@ -19,6 +19,11 @@
+ #include "ui/gl/gl_surface.h"
+ #include "ui/gl/vsync_provider.h"
+ 
++#if defined(USE_WAYLAND)
++struct wl_surface;
++struct wl_egl_window;
++#endif
++
+ namespace gfx {
+ 
+ // Interface for EGL surface.
+@@ -106,6 +111,10 @@ class GL_EXPORT PbufferGLSurfaceEGL : public GLSurfaceEGL {
+  private:
+   gfx::Size size_;
+   EGLSurface surface_;
++#if defined(USE_WAYLAND)
++  wl_surface *wsurf_;
++  wl_egl_window *wwindow_;
++#endif
+ 
+   DISALLOW_COPY_AND_ASSIGN(PbufferGLSurfaceEGL);
+ };
+diff --git a/ui/gl/gl_surface_wayland.cc b/ui/gl/gl_surface_wayland.cc
+new file mode 100644
+index 0000000..9706823
+--- /dev/null
++++ b/ui/gl/gl_surface_wayland.cc
+@@ -0,0 +1,73 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/gl/gl_surface.h"
++
++#include "base/debug/trace_event.h"
++#include "base/logging.h"
++#include "base/memory/scoped_ptr.h"
++#include "base/message_loop.h"
++#include "ui/gl/gl_bindings.h"
++#include "ui/gl/gl_implementation.h"
++#include "ui/gl/gl_surface_egl.h"
++#include "ui/gl/gl_surface_stub.h"
++
++namespace gfx {
++
++bool GLSurface::InitializeOneOffInternal() {
++  switch (GetGLImplementation()) {
++    case kGLImplementationEGLGLES2:
++      if (!GLSurfaceEGL::InitializeOneOff()) {
++        LOG(ERROR) << "GLSurfaceEGL::InitializeOneOff failed.";
++        return false;
++      }
++      break;
++    default:
++      break;
++  }
++
++  return true;
++}
++
++scoped_refptr<GLSurface> GLSurface::CreateViewGLSurface(
++    gfx::AcceleratedWidget window) {
++  TRACE_EVENT0("gpu", "GLSurface::CreateViewGLSurface");
++
++  switch (GetGLImplementation()) {
++    case kGLImplementationEGLGLES2: {
++      scoped_refptr<GLSurface> surface(new NativeViewGLSurfaceEGL(window));
++      if (!surface->Initialize())
++        return NULL;
++
++      return surface;
++    }
++    case kGLImplementationMockGL:
++      return new GLSurfaceStub;
++    default:
++      NOTREACHED();
++      return NULL;
++  }
++}
++
++scoped_refptr<GLSurface> GLSurface::CreateOffscreenGLSurface(
++    const gfx::Size& size) {
++  TRACE_EVENT0("gpu", "GLSurface::CreateOffscreenGLSurface");
++
++  switch (GetGLImplementation()) {
++    case kGLImplementationEGLGLES2: {
++      scoped_refptr<GLSurface> surface(new PbufferGLSurfaceEGL(size));
++      if (!surface->Initialize())
++        return NULL;
++
++      return surface;
++    }
++    case kGLImplementationMockGL:
++      return new GLSurfaceStub;
++    default:
++      NOTREACHED();
++      return NULL;
++  }
++}
++
++}  // namespace gfx
+diff --git a/ui/ui.gyp b/ui/ui.gyp
+index c322142..ee2f79d 100644
+--- a/ui/ui.gyp
++++ b/ui/ui.gyp
+@@ -235,6 +235,8 @@
+         'base/keycodes/keyboard_code_conversion_gtk.h',
+         'base/keycodes/keyboard_code_conversion_mac.h',
+         'base/keycodes/keyboard_code_conversion_mac.mm',
++        'base/keycodes/keyboard_code_conversion_wayland.cc',
++        'base/keycodes/keyboard_code_conversion_wayland.h',
+         'base/keycodes/keyboard_code_conversion_win.cc',
+         'base/keycodes/keyboard_code_conversion_win.h',
+         'base/keycodes/keyboard_code_conversion_x.cc',
+@@ -691,7 +693,6 @@
+             ['exclude', 'base/x/*'],
+             ['exclude', 'base/cursor/cursor_x11.cc'],
+             ['exclude', 'base/clipboard/clipboard_aurax11.cc'],
+-            ['exclude', 'base/keycodes/keyboard_code_conversion_x.*'],
+             ['exclude', 'base/touch/touch_factory_x11.*'],
+           ],
+         }],
+-- 
+1.7.9.5
+

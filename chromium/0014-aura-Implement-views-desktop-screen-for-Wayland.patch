@@ -1,0 +1,155 @@
+From 7d840651afec2f75467ff9f39fe2d40e1fa6cee3 Mon Sep 17 00:00:00 2001
+From: Tiago Vignatti <tiago.vignatti@intel.com>
+Date: Fri, 3 May 2013 12:36:12 -0300
+Subject: [PATCH 14/19] aura: Implement views desktop screen for Wayland
+
+Signed-off-by: Tiago Vignatti <tiago.vignatti@intel.com>
+---
+ ui/views/views.gyp                                 |    1 +
+ .../widget/desktop_aura/desktop_screen_wayland.cc  |  122 ++++++++++++++++++++
+ 2 files changed, 123 insertions(+)
+ create mode 100644 ui/views/widget/desktop_aura/desktop_screen_wayland.cc
+
+diff --git a/ui/views/views.gyp b/ui/views/views.gyp
+index 16c9f6d..73947ed 100644
+--- a/ui/views/views.gyp
++++ b/ui/views/views.gyp
+@@ -379,6 +379,7 @@
+         'widget/desktop_aura/desktop_screen.h',
+         'widget/desktop_aura/desktop_screen_position_client.cc',
+         'widget/desktop_aura/desktop_screen_position_client.h',
++        'widget/desktop_aura/desktop_screen_wayland.cc',
+         'widget/desktop_aura/desktop_screen_win.cc',
+         'widget/desktop_aura/desktop_screen_win.h',
+         'widget/desktop_aura/desktop_screen_x11.cc',
+diff --git a/ui/views/widget/desktop_aura/desktop_screen_wayland.cc b/ui/views/widget/desktop_aura/desktop_screen_wayland.cc
+new file mode 100644
+index 0000000..d0b3f17
+--- /dev/null
++++ b/ui/views/widget/desktop_aura/desktop_screen_wayland.cc
+@@ -0,0 +1,122 @@
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/views/widget/desktop_aura/desktop_screen.h"
++
++#include "base/logging.h"
++#include "ui/aura/root_window.h"
++#include "ui/aura/root_window_host.h"
++#include "ui/gfx/display.h"
++#include "ui/gfx/native_widget_types.h"
++#include "ui/gfx/screen.h"
++#include "ui/wayland/wayland_display.h"
++#include "ui/wayland/wayland_screen.h"
++
++namespace {
++
++gfx::Size GetPrimaryDisplaySize() {
++  ui::WaylandDisplay* display = ui::WaylandDisplay::GetDisplay();
++  std::list<ui::WaylandScreen*> screens = display->GetScreenList();
++  return screens.empty() ? gfx::Size() : screens.front()->GetAllocation().size();
++}
++
++class DesktopScreenWayland : public gfx::Screen {
++ public:
++  DesktopScreenWayland();
++  virtual ~DesktopScreenWayland();
++
++  // Overridden from gfx::Screen:
++  virtual bool IsDIPEnabled() OVERRIDE;
++  virtual gfx::Point GetCursorScreenPoint() OVERRIDE;
++  virtual gfx::NativeWindow GetWindowAtCursorScreenPoint() OVERRIDE;
++  virtual int GetNumDisplays() OVERRIDE;
++  virtual gfx::Display GetDisplayNearestWindow(
++      gfx::NativeView window) const OVERRIDE;
++  virtual gfx::Display GetDisplayNearestPoint(
++      const gfx::Point& point) const OVERRIDE;
++  virtual gfx::Display GetDisplayMatching(
++      const gfx::Rect& match_rect) const OVERRIDE;
++  virtual gfx::Display GetPrimaryDisplay() const OVERRIDE;
++  virtual void AddObserver(gfx::DisplayObserver* observer) OVERRIDE;
++  virtual void RemoveObserver(gfx::DisplayObserver* observer) OVERRIDE;
++
++ private:
++  DISALLOW_COPY_AND_ASSIGN(DesktopScreenWayland);
++};
++
++////////////////////////////////////////////////////////////////////////////////
++// DesktopScreenWayland, public:
++
++DesktopScreenWayland::DesktopScreenWayland() {
++}
++
++DesktopScreenWayland::~DesktopScreenWayland() {
++}
++
++////////////////////////////////////////////////////////////////////////////////
++// DesktopScreenWayland, gfx::Screen implementation:
++
++bool DesktopScreenWayland::IsDIPEnabled() {
++  return false;
++}
++
++gfx::Point DesktopScreenWayland::GetCursorScreenPoint() {
++  return gfx::Point();
++}
++
++gfx::NativeWindow DesktopScreenWayland::GetWindowAtCursorScreenPoint() {
++  // TODO(erg): Implement using the discussion at
++  // http://codereview.chromium.org/10279005/
++  return NULL;
++}
++
++int DesktopScreenWayland::GetNumDisplays() {
++  // TODO(erg): Figure this out with oshima or piman because I have no clue
++  // about the XRandR implications here.
++  return 1;
++}
++
++gfx::Display DesktopScreenWayland::GetDisplayNearestWindow(
++    gfx::NativeView window) const {
++  // TODO(erg): Do the right thing once we know what that is.
++  return gfx::Display(0, gfx::Rect(GetPrimaryDisplaySize()));
++}
++
++gfx::Display DesktopScreenWayland::GetDisplayNearestPoint(
++    const gfx::Point& point) const {
++  // TODO(erg): Do the right thing once we know what that is.
++  return gfx::Display(0, gfx::Rect(GetPrimaryDisplaySize()));
++}
++
++gfx::Display DesktopScreenWayland::GetDisplayMatching(
++    const gfx::Rect& match_rect) const {
++  // TODO(erg): Do the right thing once we know what that is.
++  return gfx::Display(0, gfx::Rect(GetPrimaryDisplaySize()));
++}
++
++gfx::Display DesktopScreenWayland::GetPrimaryDisplay() const {
++  // TODO(erg): Do the right thing once we know what that is.
++  return gfx::Display(0, gfx::Rect(GetPrimaryDisplaySize()));
++}
++
++void DesktopScreenWayland::AddObserver(gfx::DisplayObserver* observer) {
++  // TODO(erg|oshima): Do the right thing once we know what that is.
++  // crbug.com/122863
++}
++void DesktopScreenWayland::RemoveObserver(gfx::DisplayObserver* observer) {
++  // TODO(erg|oshima): Do the right thing once we know what that is.
++  // crbug.com/122863
++}
++
++}  // namespace
++
++////////////////////////////////////////////////////////////////////////////////
++
++namespace views {
++
++gfx::Screen* CreateDesktopScreen() {
++  return new DesktopScreenWayland;
++}
++
++}  // namespace views
+-- 
+1.7.9.5
+
